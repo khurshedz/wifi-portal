@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY AUTOINCREMENT, num INTEGER, out INTEGER, text TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS devices(mac TEXT PRIMARY KEY, sid TEXT, seen REAL);
+CREATE TABLE IF NOT EXISTS room(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, sid TEXT, num INTEGER, name TEXT, text TEXT, ts REAL,
+  deleted INTEGER DEFAULT 0, tg_id INTEGER);
+CREATE TABLE IF NOT EXISTS room_names(sid TEXT PRIMARY KEY, display TEXT UNIQUE COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS bans(sid TEXT PRIMARY KEY, ts REAL);
 """)
 db_lock = asyncio.Lock()
 
@@ -79,6 +84,8 @@ class Limiter:
         self.n, self.per, self.hits = n, per, defaultdict(deque)
 
     def ok(self, key: str) -> bool:
+        if len(self.hits) > 20000:  # защита памяти от множества ключей (сессий/IP)
+            self.hits.clear()
         now, d = time.monotonic(), self.hits[key]
         while d and now - d[0] > self.per:
             d.popleft()
@@ -148,6 +155,97 @@ async def set_news(m: dict, text: str) -> None:
         print("news reply error:", e)
 
 
+# ---------- общий чат: фильтры и модерация ----------
+ROOM_MAX = 500
+LINK_RE = re.compile(r"(https?://|www\.|t\.me/|\b[\w-]+\.(com|ru|tj|net|org|me|io|uz|kz|info|xyz|site|online)\b)", re.I)
+BAD_RE = re.compile(
+    r"\b\w*(?:пизд|х[уy][йеёяию]|муда[кч]|пид[оа]р|гандон|шлюх|залуп)\w*"
+    r"|\b(?:за|на|вы|у|по|до|от|раз|с|въ|отъ|съ|подъ|при)?[её]б(?:а|у|л|ы|н|и|ё|о|т)\w*"
+    r"|\bбл[яе]т?ь?\b|\bблят\w*|\bсук[аи]\b|\bсучк\w*", re.I)
+
+
+def censor(s: str) -> str:
+    return BAD_RE.sub(lambda m: m.group(0)[0] + "***", s)
+
+
+async def room_topic() -> int:
+    """Тема «👥 Общий чат» в группе — туда копируются все сообщения комнаты."""
+    row = q("SELECT v FROM kv WHERE k='room_topic'")
+    if row:
+        return int(row[0][0])
+    async with db_lock:
+        row = q("SELECT v FROM kv WHERE k='room_topic'")
+        if row:
+            return int(row[0][0])
+        t = await tg("createForumTopic", chat_id=TG_CHAT_ID, name="👥 Общий чат")
+        q("INSERT OR REPLACE INTO kv VALUES('room_topic',?)", (str(t["message_thread_id"]),))
+        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=t["message_thread_id"], text=(
+            "Сюда копируется общий чат со страницы.\n"
+            "Ответ в этой теме — сообщение «👑 Админ» в общий чат.\n"
+            "/del 12 — удалить сообщение #12\n/ban 12 — забанить автора #12 и удалить все его сообщения\n"
+            "/unban 12 — разбанить\n/clear — очистить общий чат"))
+        return t["message_thread_id"]
+
+
+async def moderate(m: dict, text: str) -> None:
+    parts = text.split()
+    cmd = parts[0].split("@")[0][1:]
+    arg = parts[1].lstrip("#") if len(parts) > 1 else ""
+    reply = "Формат: /del 12, /ban 12, /unban 12, /clear"
+    if cmd == "clear":
+        q("UPDATE room SET deleted=1")
+        reply = "🧹 Общий чат очищен"
+    elif arg.isdigit():
+        row = q("SELECT sid, name FROM room WHERE id=?", (int(arg),))
+        if not row:
+            reply = f"Сообщения #{arg} нет"
+        elif cmd == "del":
+            q("UPDATE room SET deleted=1 WHERE id=?", (int(arg),))
+            reply = f"🗑 Сообщение #{arg} удалено"
+        elif row[0][0] == "admin":
+            reply = "Это сообщение админа"
+        elif cmd == "ban":
+            q("INSERT OR REPLACE INTO bans VALUES(?,?)", (row[0][0], time.time()))
+            n = q("SELECT COUNT(*) FROM room WHERE sid=? AND deleted=0", (row[0][0],))[0][0]
+            q("UPDATE room SET deleted=1 WHERE sid=?", (row[0][0],))
+            reply = f"🚫 {row[0][1]} забанен, удалено сообщений: {n}"
+        elif cmd == "unban":
+            q("DELETE FROM bans WHERE sid=?", (row[0][0],))
+            reply = f"✅ {row[0][1]} разбанен"
+    try:
+        await tg("sendMessage", chat_id=TG_CHAT_ID, text=reply, reply_to_message_id=m["message_id"],
+                 **({"message_thread_id": m["message_thread_id"]} if m.get("is_topic_message") else {}))
+    except Exception as e:
+        print("moderate reply error:", e)
+
+
+def guest_num(sid: str) -> int:
+    row = q("SELECT num FROM guests WHERE sid=?", (sid,))
+    if row:
+        return row[0][0]
+    if not new_guests.ok("all"):
+        raise HTTPException(429, "Слишком много новых гостей, попробуйте позже")
+    num = q("SELECT COALESCE(MAX(num),0)+1 FROM guests")[0][0]
+    q("INSERT INTO guests(sid,num,created) VALUES(?,?,?)", (sid, num, time.time()))
+    return num
+
+
+def display_name(sid: str, num: int, name: str | None) -> str:
+    """Имя в общем чате: занятое другим гостем имя получает номер — «Али 2»."""
+    want = name or f"Анон{num}"
+    if want.lower() in ("админ", "admin", "👑 админ", "администратор"):
+        want = f"Анон{num}"
+    cur = q("SELECT display FROM room_names WHERE sid=?", (sid,))
+    if cur and (cur[0][0] == want or re.fullmatch(re.escape(want) + r" \d+", cur[0][0], re.I)):
+        return cur[0][0]
+    cand, k = want, 1
+    while q("SELECT 1 FROM room_names WHERE display=? AND sid<>?", (cand, sid)):
+        k += 1
+        cand = f"{want} {k}"
+    q("INSERT OR REPLACE INTO room_names VALUES(?,?)", (sid, cand))
+    return cand
+
+
 ONLINE_BASE = int(os.environ.get("ONLINE_BASE", "4"))  # прибавка к счётчику «на сайте»
 
 # кто сейчас на странице: sid -> время последнего опроса
@@ -178,6 +276,14 @@ async def poll_telegram():
                 if text and re.match(r"^/news(@\w+)?(\s|$)", text):
                     await set_news(m, text)
                     continue
+                if text and re.match(r"^/(del|ban|unban|clear)(@\w+)?(\s|$)", text):
+                    await moderate(m, text)
+                    continue
+                if (m.get("is_topic_message") and text
+                        and str(m["message_thread_id"]) == (q("SELECT v FROM kv WHERE k='room_topic'") or [[""]])[0][0]):
+                    q("INSERT INTO room(sid,num,name,text,ts) VALUES('admin',0,'👑 Админ',?,?)",
+                      (clean(text, ROOM_MAX), time.time()))
+                    continue
                 if not m.get("is_topic_message"):
                     continue
                 if not text:
@@ -192,6 +298,27 @@ async def poll_telegram():
         except Exception as e:  # сеть/telegram — подождать и продолжить
             print("poll error:", e)
             await asyncio.sleep(5)
+
+
+def cache_key() -> str:
+    return hmac.new(UAM_SECRET.encode(), b"cache-export", hashlib.sha256).hexdigest()
+
+
+async def take_over_cache():
+    """При деплое старая версия ещё отвечает по публичному адресу — забираем у неё готовые данные.
+    Внешние сервисы тогда опрашиваются только в HH:00, а не при каждом деплое."""
+    if not (UAM_SECRET and PORTAL_URL):
+        return
+    await asyncio.sleep(1)
+    try:
+        r = await http.get(PORTAL_URL.rstrip("/") + "/api/cache-export",
+                           headers={"X-Cache-Key": cache_key()}, timeout=25)
+        if r.status_code == 200:
+            print("cache taken over:", info.import_state(r.json()), "sources")
+        else:
+            print("cache take-over: HTTP", r.status_code)
+    except Exception as e:
+        print("cache take-over failed:", type(e).__name__)  # обычный холодный старт: данные подтянет первый гость
 
 
 async def refresh_hourly():
@@ -209,7 +336,7 @@ async def lifespan(app: FastAPI):
     global http
     http = httpx.AsyncClient()
     task = asyncio.create_task(poll_telegram())
-    asyncio.create_task(info.collect(http))  # прогрев кеша, чтобы первый гость не ждал
+    asyncio.create_task(take_over_cache())  # кеш от предыдущей версии — без лишних запросов к сервисам
     hourly = asyncio.create_task(refresh_hourly())
     yield
     task.cancel()
@@ -220,9 +347,23 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
+def client_ip(request: Request) -> str:
+    """Реальный IP: Cloudflare перед Render ставит CF-Connecting-IP (подделать снаружи нельзя)."""
+    return (request.headers.get("cf-connecting-ip") or request.headers.get("true-client-ip")
+            or (request.client.host if request.client else "?"))[:64]
+
+
+ip_lim = Limiter(1200, 60)  # все запросы с одного IP в минуту (гости Wi-Fi за одним IP, опрос раз в 3 c)
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    if int(request.headers.get("content-length") or 0) > 8192:
+    if request.url.path != "/healthz" and not ip_lim.ok(client_ip(request)):
+        return JSONResponse({"detail": "Слишком много запросов"}, status_code=429)
+    cl = request.headers.get("content-length")
+    if request.method == "POST" and (cl is None or not cl.isdigit()):
+        return JSONResponse({"detail": "length required"}, status_code=411)
+    if int(cl or 0) > 8192:
         return JSONResponse({"detail": "too large"}, status_code=413)
     resp = await call_next(request)
     resp.headers["Content-Security-Policy"] = (
@@ -297,6 +438,14 @@ async def get_info():
     data["news"] = news[0][0] if news else None
     data["online"] = ONLINE_BASE + online_count()
     return data
+
+
+@app.get("/api/cache-export")
+async def cache_export(request: Request):
+    key = request.headers.get("x-cache-key", "")
+    if not (UAM_SECRET and hmac.compare_digest(key, cache_key())):
+        raise HTTPException(404)
+    return info.export_state()
 
 
 IMG_ID_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -382,6 +531,61 @@ async def messages(request: Request, after: int = 0):
     rows = q("SELECT id, out, text, ts FROM messages WHERE num=? AND id>? ORDER BY id LIMIT 200",
              (row[0][0], max(after, 0)))
     return {"messages": [{"id": i, "out": bool(o), "text": t, "ts": ts} for i, o, t, ts in rows]}
+
+
+room_guest = Limiter(6, 60)
+room_burst = Limiter(1, 2)
+room_ip = Limiter(30, 60)          # сообщений в общий чат с одного IP (у гостей Wi-Fi он общий)
+# писать в общий чат — только устройствам, пришедшим через роутер (подписанный MAC)
+ROOM_WIFI_ONLY = os.environ.get("ROOM_WIFI_ONLY", "1" if UAM_SECRET else "0") == "1"
+ROOM_KEEP = 1000
+
+
+def room_you(sid: str) -> str:
+    return hashlib.sha256(sid.encode()).hexdigest()[:10]
+
+
+@app.get("/api/room")
+async def room_get(request: Request, after: int = 0):
+    sid = require_sid(request)
+    if len(online) < 10000:
+        online[sid] = time.time()
+    rows = q("SELECT id, sid, num, name, text, ts FROM room WHERE id>? AND deleted=0 ORDER BY id DESC LIMIT 100",
+             (max(after, 0),))
+    # удалённые модератором — чтобы убрать их с экранов
+    gone = [r[0] for r in q("SELECT id FROM room WHERE deleted=1 ORDER BY id DESC LIMIT 300")]
+    return {"src": "cloud", "you": room_you(sid), "deleted": gone,
+            "messages": [{"id": i, "u": room_you(s), "num": n, "name": nm, "text": tx, "ts": ts}
+                         for i, s, n, nm, tx, ts in reversed(rows)]}
+
+
+@app.post("/api/room")
+async def room_post(body: SendIn, request: Request):
+    sid = require_sid(request)
+    if q("SELECT 1 FROM bans WHERE sid=?", (sid,)):
+        raise HTTPException(403, "Вам запрещено писать в общий чат")
+    if ROOM_WIFI_ONLY and not q("SELECT 1 FROM devices WHERE sid=?", (sid,)):
+        raise HTTPException(403, "Писать в общий чат можно только подключившись к Free Wifi")
+    text = clean(body.text, ROOM_MAX)
+    if not text:
+        raise HTTPException(400, "Пустое сообщение")
+    if LINK_RE.search(text):
+        raise HTTPException(400, "Ссылки в общем чате запрещены")
+    if not (room_burst.ok(sid) and room_guest.ok(sid) and room_ip.ok(client_ip(request)) and global_lim.ok("all")):
+        raise HTTPException(429, "Не так быстро 🙂")
+    num = guest_num(sid)
+    name = display_name(sid, num, clean(body.name or "", MAX_NAME) or None)
+    text = censor(text)
+    cur = db.execute("INSERT INTO room(sid,num,name,text,ts) VALUES(?,?,?,?,?)", (sid, num, name, text, time.time()))
+    mid = cur.lastrowid
+    q("DELETE FROM room WHERE id <= ?", (mid - ROOM_KEEP,))
+    try:
+        topic = await room_topic()
+        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=topic, text=f"#{mid} {name} (Анон{num}): {text}",
+                 link_preview_options={"is_disabled": True})
+    except Exception as e:
+        print("room copy error:", e)
+    return {"ok": True, "id": mid, "name": name}
 
 
 @app.exception_handler(404)

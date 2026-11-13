@@ -4,6 +4,7 @@
 Упавший источник просто пропускается, остальные отдаются.
 """
 import asyncio
+import base64
 import hashlib
 import html
 import os
@@ -420,3 +421,23 @@ async def collect(client: httpx.AsyncClient) -> dict:
         out["updated"] = max(ts for ts, _ in stamps)            # последнее обновление чего-либо
         out["next_update"] = min(expires(ts, ttl) for ts, ttl in stamps)  # ближайшее, всегда HH:00
     return out
+
+
+# ---------- передача кеша между версиями при деплое ----------
+def export_state() -> dict:
+    return {"cache": {k: [ts, v] for k, (ts, v) in _cache.items()},
+            "images": {k: [base64.b64encode(b).decode(), ct] for k, (b, ct) in images.items()},
+            "tg": dict(_tg)}
+
+
+def import_state(d: dict) -> int:
+    n = 0
+    for k, (ts, v) in (d.get("cache") or {}).items():
+        if k in SOURCES and k not in _cache:
+            _cache[k] = (float(ts), v); n += 1
+    for k, (b64, ct) in (d.get("images") or {}).items():
+        if re.fullmatch(r"[0-9a-f]{16}", k) and str(ct).startswith("image/"):
+            images.setdefault(k, (base64.b64decode(b64), ct))
+    for k, v in (d.get("tg") or {}).items():
+        _tg.setdefault(k, str(v)[:500])
+    return n

@@ -69,7 +69,21 @@ case "$P" in
     json 200 '{"num":null,"queued":true}'
     ;;
 /api/room)
-    # общий чат гостей — хранится на роутере (RAM), работает без интернета
+    # есть интернет — общий чат на Render (с модерацией); нет — локальный на роутере (RAM)
+    if online; then
+        if [ "$REQUEST_METHOD" = "POST" ]; then
+            [ "$HTTP_X_REQUESTED_WITH" = "chat" ] || { json 403 '{"detail":"forbidden"}'; exit; }
+            len=${CONTENT_LENGTH:-0}; case "$len" in ''|*[!0-9]*) len=0;; esac
+            [ "$len" -gt 0 ] && [ "$len" -le 4096 ] || { json 413 '{"detail":"слишком длинно"}'; exit; }
+            body=$(mktemp); head -c "$len" > "$body"
+            proxy POST /api/room "$body" && { rm -f "$body"; exit; }
+            # Render не ответил — пишем локально
+            exec 0< "$body"; rm -f "$body"; CONTENT_LENGTH=$len
+        else
+            after=$(echo "$QUERY_STRING" | sed -n 's/.*after=\([0-9]\{1,12\}\).*/\1/p')
+            proxy GET "/api/room?after=${after:-0}" && exit
+        fi
+    fi
     R="$STATE/room"; mkdir -p "$R"; touch "$R/log" "$R/users"
     ME=$(echo "$SID" | md5sum | cut -c1-10)
     if [ "$REQUEST_METHOD" = "POST" ]; then
@@ -96,7 +110,7 @@ case "$P" in
         json 200 "{\"ok\":true,\"num\":$num}"
     else
         after=$(echo "$QUERY_STRING" | sed -n 's/.*after=\([0-9]\{1,12\}\).*/\1/p')
-        { printf '{"you":"%s","messages":[' "$ME"
+        { printf '{"src":"local","you":"%s","deleted":[],"messages":[' "$ME"
           awk -v a="${after:-0}" -F'[:,]' '$2+0 > a+0' "$R/log" | tail -n 100 | sed '$!s/$/,/'
           printf ']}'; } | reply 200 "application/json"
     fi

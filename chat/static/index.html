@@ -51,11 +51,13 @@
 
     <article class="card wide gallery" id="card-photos" hidden>
       <h3>📸 Фото дня <span id="photo-date" class="muted"></span></h3>
-      <div class="slides" id="slides"></div>
+      <div class="slides-wrap">
+        <div class="slides" id="slides"></div>
+        <a class="save-btn" id="save" href="#" download>💾 Сохранить фото</a>
+      </div>
       <div class="slide-nav">
         <button type="button" class="nav-btn" id="prev" aria-label="Назад">‹</button>
         <div class="dots" id="dots"></div>
-        <a class="save-btn" id="save" href="#" download>💾 Сохранить</a>
         <button type="button" class="nav-btn" id="next" aria-label="Вперёд">›</button>
       </div>
       <div class="caption" id="caption"></div>
@@ -121,11 +123,11 @@
   <section class="chat">
     <h2>💬 Напишите нам <span id="online" class="online"></span></h2>
     <div class="chips tabs" id="tabs" hidden>
-      <button type="button" data-t="admin" class="on">💬 Админу</button>
-      <button type="button" data-t="room">👥 Общий чат</button>
+      <button type="button" data-t="admin" class="on need-net">💬 Админу</button>
+      <button type="button" data-t="room" class="local-ok">👥 Общий чат</button>
     </div>
     <main id="room-log" class="room" aria-live="polite" hidden>
-      <div class="hint">Общий чат всех, кто подключён к Wi-Fi. Работает даже без интернета.</div>
+      <div class="hint">Общий чат гостей Wi-Fi. Будьте вежливы: ссылки и мат запрещены, админ видит все сообщения.</div>
     </main>
     <main id="log" aria-live="polite">
       <div class="hint">Напишите сообщение — администратор ответит здесь.</div>

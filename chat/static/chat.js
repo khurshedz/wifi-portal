@@ -5,9 +5,10 @@
         err = $("err"), me = $("me"), sendBtn = $("send"), emojis = $("emojis");
   const EMOJI = "😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 😉 😌 😍 🥰 😘 😗 😋 😛 😜 🤪 😝 🤗 🤭 🤫 🤔 🤐 😐 😑 😶 😏 😒 🙄 😬 😴 🤤 😷 🤒 🤕 🥵 🥶 😎 🤓 🧐 😕 😟 🙁 😮 😯 😲 😳 🥺 😢 😭 😱 😖 😣 😞 😓 😩 😫 😤 😡 😠 🤬 😈 💀 🤡 👻 👽 🤖 💩 👍 👎 👌 ✌️ 🤞 🤟 🤘 👏 🙌 👐 🤝 🙏 💪 👋 🤙 ✍️ 👀 🫶 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 💕 💖 💯 💥 💫 💬 💤 ✨ 🔥 ⭐ 🌟 ⚡ 🎉 🎊 🎁 🎂 🍰 ☕ 🍵 🥤 🍉 🍇 🍎 🍑 🍒 🍋 🌰 🍞 🍕 🍔 🥗 🍲 🥟 🍚 🍖 🍗 🌸 🌹 🌷 🌼 🌻 🍀 🌿 🌳 🌙 ☀️ 🌤️ ☁️ 🌧️ ❄️ 🌈 🏔️ 🌊 🐱 🐶 🐴 🐑 🐓 🦅 🐟 🦋 ⚽ 🏀 🏆 🥇 🎵 🎶 📱 💻 📶 📷 🚗 🚕 🏠 🕌 🕋 ⏰ 💰 💵 ✅ ❌ ❓ ❗ 🆗 🆘 🇹🇯 🇷🇺 🇺🇿 🇰🇿 🇰🇬 🇹🇷".split(" ");
   let last = 0, polling = false;
-  // общий чат гостей — есть только на роутере (BASE задан)
+  // общий чат гостей: на Render — с модерацией, на роутере без интернета — локальный
   const roomLog = $("room-log");
-  let mode = "admin", roomLast = 0, roomPolling = false;
+  let mode = "admin", roomLast = 0, roomPolling = false, roomSrc = "";
+  const roomEls = new Map();
 
   try { nameEl.value = localStorage.getItem("name") || ""; } catch (e) {}
 
@@ -54,18 +55,30 @@
     t.textContent = new Date(m.ts * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
     div.appendChild(t);
     roomLog.appendChild(div);
+    roomEls.set(m.id, div);
     roomLog.scrollTop = roomLog.scrollHeight;
   };
   const pollRoom = async () => {
-    if (roomPolling || !BASE) return;
+    if (roomPolling) return;
     roomPolling = true;
     try {
+      const src0 = roomSrc;
       const d = await api("/api/room?after=" + roomLast);
-      d.messages.forEach((m) => { addRoom(m, d.you); roomLast = Math.max(roomLast, m.id); });
+      if (d.src && d.src !== src0) {          // переключились облако <-> роутер: другая история
+        roomSrc = d.src;
+        if (src0) {
+          roomLast = 0; roomEls.clear();
+          roomLog.replaceChildren();
+          roomPolling = false;
+          return pollRoom();
+        }
+      }
+      (d.deleted || []).forEach((id) => { const e = roomEls.get(id); if (e) { e.remove(); roomEls.delete(id); } });
+      d.messages.forEach((m) => { if (!roomEls.has(m.id)) addRoom(m, d.you); roomLast = Math.max(roomLast, m.id); });
     } catch (e) { /* повторим */ }
     roomPolling = false;
   };
-  if (BASE) {
+  {
     $("tabs").hidden = false;
     $("tabs").addEventListener("click", (e) => {
       const b = e.target.closest("button");
@@ -76,7 +89,7 @@
       log.hidden = mode === "room";
       if (mode === "room") pollRoom();
     });
-    setInterval(pollRoom, 3000);
+    setInterval(() => { if (mode === "room") pollRoom(); }, 3000);
   }
 
   const showMe = (num, name) => {

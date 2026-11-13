@@ -405,6 +405,7 @@
       // без интернета часы роутера могут врать — тогда верим часам телефона
       offset = d.offline ? 0 : d.now * 1000 - Date.now();
       $("offline").hidden = !d.offline;
+      document.body.classList.toggle("is-offline", !!d.offline);  // CSS помечает то, что требует сети
       if (d.offline) {
         $("offline-text").textContent = "Нет интернета — показываем данные на " +
           (d.synced ? new Date(d.synced * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "последнее обновление") +
