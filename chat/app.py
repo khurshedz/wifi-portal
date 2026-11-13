@@ -148,6 +148,8 @@ async def set_news(m: dict, text: str) -> None:
         print("news reply error:", e)
 
 
+ONLINE_BASE = int(os.environ.get("ONLINE_BASE", "4"))  # прибавка к счётчику «на сайте»
+
 # кто сейчас на странице: sid -> время последнего опроса
 online: dict[str, float] = {}
 
@@ -280,7 +282,7 @@ async def get_info():
     data = await info.collect(http)
     news = q("SELECT v FROM kv WHERE k='news'")
     data["news"] = news[0][0] if news else None
-    data["online"] = online_count()
+    data["online"] = ONLINE_BASE + online_count()
     return data
 
 
