@@ -10,7 +10,8 @@ SHARE="${PORTAL_SHARE:-/usr/share/portal}"
 UA="wifi-portal-router/1.0"
 mkdir -p "$STATE/queue"
 
-fetch() { curl -fsS -m 60 -A "$UA" "$@"; }
+CJ="$STATE/cookies"  # сессия роутера на Render: /api/info и /media отдаются только со страницы
+fetch() { curl -fsS -m 60 -A "$UA" -b "$CJ" -c "$CJ" -H 'X-Requested-With: chat' "$@"; }
 
 flush_queue() {
     for f in "$STATE"/queue/*; do
@@ -46,15 +47,15 @@ install_cgi() {
 
 full_sync() {
     NEW="$DIR.new"; rm -rf "$NEW"; mkdir -p "$NEW/static" "$NEW/media"
-    fetch -o "$NEW/info.json" "$SRC/api/info" || return 1
     fetch "$SRC/" | sed 's|<html lang="ru">|<html lang="ru" data-api="/cgi-bin/portal">|' > "$NEW/index.html" || return 1
     grep -q 'data-api=' "$NEW/index.html" || return 1
+    fetch -o "$NEW/info.json" "$SRC/api/info" || return 1
     for f in chat.css info.js chat.js; do fetch -o "$NEW/static/$f" "$SRC/static/$f" || return 1; done
     for id in $(grep -o '"id":"[0-9a-f]\{16\}"' "$NEW/info.json" | cut -d'"' -f4 | sort -u); do
         if [ -f "$DIR/media/$id" ]; then             # уже скачано — не качаем снова
             cp "$DIR/media/$id" "$DIR/media/$id.type" "$NEW/media/" 2>/dev/null
         else
-            ct=$(curl -fsS -m 60 -A "$UA" -o "$NEW/media/$id" -w '%{content_type}' "$SRC/media/$id") \
+            ct=$(fetch -o "$NEW/media/$id" -w '%{content_type}' "$SRC/media/$id") \
                 && echo "$ct" > "$NEW/media/$id.type" || rm -f "$NEW/media/$id"
         fi
     done

@@ -328,6 +328,45 @@
     renderOtd();
   });
 
+  let newsItems = [], newsFilter = "all";
+  const ago = (ts) => {
+    const m = Math.max(0, Math.round((now().getTime() / 1000 - ts) / 60));
+    if (m < 60) return m + " мин назад";
+    if (m < 1440) return Math.round(m / 60) + " ч назад";
+    return new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+  };
+  const renderNewsList = () => {
+    const list = newsFilter === "local" ? newsItems.filter((x) => x.local || x.near) : newsItems;
+    $("news-list").replaceChildren(...(list.length ? list : [{ title: "Пока нет новостей по этому фильтру", src: "", ts: 0 }]).map((x) => {
+      const d = el("details"), s = el("summary");
+      s.append(document.createTextNode((x.near ? "📍 " : "") + x.title));
+      if (x.src) {
+        const meta = el("span", "meta", x.src + (x.ts ? " · " + ago(x.ts) : ""));
+        if (x.near) meta.classList.add("near");
+        s.appendChild(meta);
+      }
+      d.appendChild(s);
+      if (x.desc) d.appendChild(el("p", null, x.desc));
+      return d;
+    }));
+  };
+  const renderNewsCard = (n) => {
+    if (!n || !n.items || !n.items.length) return;
+    $("card-news").hidden = false;
+    const sig = n.items.map((x) => x.title).join("|");
+    if (sig === renderNewsCard.sig) return;   // не сворачивать раскрытые, если новости те же
+    renderNewsCard.sig = sig;
+    newsItems = n.items;
+    renderNewsList();
+  };
+  $("news-filter").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    newsFilter = b.dataset.f;
+    [...$("news-filter").children].forEach((x) => x.classList.toggle("on", x === b));
+    renderNewsList();
+  });
+
   const renderWiki = (w) => {
     if (!w) return;
     if (w.photos && w.photos.length) {
@@ -399,7 +438,7 @@
 
   const load = async () => {
     try {
-      const r = await fetch(BASE + "/api/info", { credentials: "same-origin" });
+      const r = await fetch(BASE + "/api/info", { credentials: "same-origin", headers: { "X-Requested-With": "chat" } });
       if (!r.ok) throw new Error(r.status);
       const d = await r.json();
       // без интернета часы роутера могут врать — тогда верим часам телефона
@@ -423,6 +462,7 @@
       renderQuran(d.quran);
       otdData.hijri = d.hijri || null;
       renderWiki(d.wiki);
+      renderNewsCard(d.feed);
       renderOnline(d.online);
       renderProverb();
     } catch (e) {

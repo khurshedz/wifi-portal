@@ -386,25 +386,86 @@ async def wiki(c):
     return {"photos": photos, "onthisday": otd, "islam": islam}
 
 
+# ---------- местные новости (RSS таджикских СМИ) ----------
+NEWS_FEEDS = [
+    ("Asia-Plus", "https://asiaplustj.info/ru/rss"),
+    ("Ховар", "https://khovar.tj/rus/feed/"),
+    ("Авеста", "https://avesta.tj/feed/"),
+    ("News.tj", "https://news.tj/ru/rss.xml"),
+]
+LOCAL_RE = re.compile(r"турсунзод|турсунзаде|tursunzod|регар|талко|talco|шахринав|гиссар|ҳисор|рудак|"
+                      r"варзоб|вахдат|файзабад|душанбе|dushanbe", re.I)
+NEAR_RE = re.compile(r"турсунзод|турсунзаде|tursunzod|регар|талко|talco|шахринав|гиссар|ҳисор", re.I)
+
+
+async def news(c):
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+
+    async def one(src, url):
+        try:
+            r = await c.get(url, headers=WIKI_UA, timeout=20, follow_redirects=True)
+            r.raise_for_status()
+            root = ET.fromstring(r.content[:2_000_000])
+        except Exception as e:
+            print("news", src, type(e).__name__)
+            return []
+        out = []
+        for it in root.iter("item"):
+            title = _strip_html(it.findtext("title") or "")[:200]
+            desc = _strip_html(it.findtext("description") or "")
+            desc = re.sub(r"\s+", " ", desc)[:400]
+            try:
+                ts = parsedate_to_datetime(it.findtext("pubDate") or "").timestamp()
+            except Exception:
+                ts = 0
+            if title:
+                txt = title + " " + desc
+                out.append({"src": src, "title": title, "desc": desc if desc != title else "", "ts": ts,
+                            "near": bool(NEAR_RE.search(txt)), "local": bool(LOCAL_RE.search(txt))})
+        return out[:30]
+
+    items = [x for lst in await asyncio.gather(*(one(s, u) for s, u in NEWS_FEEDS)) for x in lst]
+    if not items:
+        raise RuntimeError("news: все ленты недоступны")
+    seen, uniq = set(), []
+    for x in sorted(items, key=lambda x: -x["ts"]):
+        k = x["title"].lower()[:60]
+        if k not in seen:
+            seen.add(k); uniq.append(x)
+    week = time.time() - 7 * 86400
+    near = [x for x in uniq if x["near"] and x["ts"] > week][:5]
+    rest = [x for x in uniq if x not in near][:15]
+    return {"items": near + rest}
+
+
 SOURCES = {  # ключ: (функция, ttl секунд) — редко, чтобы не злоупотреблять бесплатными API
     "weather": (weather_any, 2 * 3600), "air": (air, 2 * 3600), "eskhata": (eskhata, 2 * 3600),
     "cbr": (cbr, 2 * 3600), "namaz": (namaz, 12 * 3600), "magnetic": (magnetic, 2 * 3600),
-    "quran": (quran, 12 * 3600), "wiki": (wiki, 3600),
+    "quran": (quran, 12 * 3600), "wiki": (wiki, 3600), "feed": (news, 3600),
 }
 
 
-async def collect(client: httpx.AsyncClient) -> dict:
+async def refresh(client: httpx.AsyncClient) -> None:
+    """Обновить устаревшие источники. Вызывает ТОЛЬКО фоновая задача сервера, не запросы гостей."""
     keys = list(SOURCES)
-    vals = await asyncio.gather(*(cached(k, SOURCES[k][1], SOURCES[k][0], client) for k in keys))
-    out = dict(zip(keys, vals))
-    # namaz кешируется на 3 ч — сбросить, если наступил новый день
+    await asyncio.gather(*(cached(k, SOURCES[k][1], SOURCES[k][0], client) for k in keys))
     today = datetime.now(timezone(timedelta(hours=5))).strftime("%d-%m-%Y")
-    if out.get("namaz") and out["namaz"].get("date") != today:
+    n = _cache.get("namaz", (0, None))[1]
+    if n and n.get("date") != today:  # новый день — новое время намаза
         _cache.pop("namaz", None)
-        out["namaz"] = await cached("namaz", SOURCES["namaz"][1], namaz, client)
-    if out.get("quran") and out["quran"].get("day") != day_index():  # новый день — новый аят
+        await cached("namaz", SOURCES["namaz"][1], namaz, client)
+    qd = _cache.get("quran", (0, None))[1]
+    if qd and qd.get("day") != day_index():  # новый день — новый аят
         _cache.pop("quran", None)
-        out["quran"] = await cached("quran", SOURCES["quran"][1], quran, client)
+        await cached("quran", SOURCES["quran"][1], quran, client)
+
+
+async def collect(client: httpx.AsyncClient | None = None) -> dict:
+    """Собрать ответ из кеша (без сетевых запросов). С client — сначала обновить устаревшее."""
+    if client is not None:
+        await refresh(client)
+    out = {k: _cache[k][1] if k in _cache else None for k in SOURCES}
     w, n = out.get("weather"), out.get("namaz")
     if w and n and not w.get("sunrise"):
         times = {x["name"]: x["time"] for x in n["times"]}

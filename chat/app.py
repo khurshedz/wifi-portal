@@ -6,6 +6,7 @@
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import secrets
@@ -314,7 +315,8 @@ async def take_over_cache():
         r = await http.get(PORTAL_URL.rstrip("/") + "/api/cache-export",
                            headers={"X-Cache-Key": cache_key()}, timeout=25)
         if r.status_code == 200:
-            print("cache taken over:", info.import_state(r.json()), "sources")
+            d = r.json()
+            print("cache taken over:", info.import_state(d), "sources,", import_db(d.get("db")), "db rows")
         else:
             print("cache take-over: HTTP", r.status_code)
     except Exception as e:
@@ -322,13 +324,16 @@ async def take_over_cache():
 
 
 async def refresh_hourly():
-    """Ровно в HH:00 (+5 c) обновляет инфо-блок, не дожидаясь гостей."""
+    """Единственное место, где сервер ходит во внешние сервисы.
+    Раз в минуту проверяет кеш: устаревшее (срок — ровно HH:00) обновляется, остальное не трогается.
+    После неудачи источник повторяется через минуту (см. info.cached)."""
+    await asyncio.sleep(8)  # сначала дать шанс забрать кеш у предыдущей версии
     while True:
-        await asyncio.sleep(3600 - time.time() % 3600 + 5)
         try:
-            await info.collect(http)
+            await info.refresh(http)
         except Exception as e:
-            print("hourly refresh error:", e)
+            print("refresh error:", e)
+        await asyncio.sleep(60 - time.time() % 60 + 5)
 
 
 @asynccontextmanager
@@ -348,9 +353,30 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 
 
 def client_ip(request: Request) -> str:
-    """Реальный IP: Cloudflare перед Render ставит CF-Connecting-IP (подделать снаружи нельзя)."""
-    return (request.headers.get("cf-connecting-ip") or request.headers.get("true-client-ip")
-            or (request.client.host if request.client else "?"))[:64]
+    """Реальный IP клиента. Прокси Render дописывает адрес СПРАВА в X-Forwarded-For,
+    поэтому берём самый правый публичный адрес — левые части клиент может подделать."""
+    for part in reversed(request.headers.get("x-forwarded-for", "").split(",")):
+        try:
+            ip = ipaddress.ip_address(part.strip())
+        except ValueError:
+            continue
+        if ip.is_global:
+            return str(ip)
+    return (request.client.host if request.client else "?")[:64]
+
+
+# внешний IP нашей точки Wi-Fi (все гости за NAT роутера выходят с него)
+WIFI_IPS = {x.strip() for x in os.environ.get("WIFI_IPS", "").split(",") if x.strip()}
+
+
+def from_wifi(request: Request, sid: str) -> bool:
+    if q("SELECT 1 FROM devices WHERE sid=?", (sid,)):
+        return True
+    ip = client_ip(request)
+    if ip in WIFI_IPS:
+        return True
+    row = q("SELECT v FROM kv WHERE k='wifi_ip'")
+    return bool(row) and row[0][0] == ip
 
 
 ip_lim = Limiter(1200, 60)  # все запросы с одного IP в минуту (гости Wi-Fi за одним IP, опрос раз в 3 c)
@@ -425,19 +451,33 @@ async def index(request: Request):
             sid = sid or secrets.token_urlsafe(32)
             q("INSERT INTO devices(mac,sid,seen) VALUES(?,?,?)", (mac, sid, time.time()))
         q("UPDATE devices SET seen=? WHERE mac=?", (time.time(), mac))
+        q("INSERT OR REPLACE INTO kv VALUES('wifi_ip',?)", (client_ip(request),))  # запомнить IP точки
         # убираем подписанные параметры из адресной строки
         return with_cookie(RedirectResponse("/", status_code=303), sid)
     resp = FileResponse(BASE / "static" / "index.html")
     return resp if sid else with_cookie(resp, secrets.token_urlsafe(32))
 
 
+def require_page(request: Request) -> None:
+    """Данные — только своей странице: нужна cookie сессии и заголовок от нашего JS."""
+    if not get_sid(request) or request.headers.get("x-requested-with") != "chat":
+        raise HTTPException(404)
+
+
 @app.get("/api/info")
-async def get_info():
-    data = await info.collect(http)
+async def get_info(request: Request):
+    require_page(request)
+    data = await info.collect()  # только кеш — запросы гостей никогда не дёргают внешние сервисы
     news = q("SELECT v FROM kv WHERE k='news'")
     data["news"] = news[0][0] if news else None
     data["online"] = ONLINE_BASE + online_count()
     return data
+
+
+DB_EXPORT = {  # таблица -> сколько последних строк передавать новой версии
+    "guests": 100000, "devices": 100000, "bans": 100000, "room_names": 100000, "kv": 1000,
+    "room": 1000, "messages": 5000,
+}
 
 
 @app.get("/api/cache-export")
@@ -445,15 +485,37 @@ async def cache_export(request: Request):
     key = request.headers.get("x-cache-key", "")
     if not (UAM_SECRET and hmac.compare_digest(key, cache_key())):
         raise HTTPException(404)
-    return info.export_state()
+    data = info.export_state()
+    tables = {}
+    for tbl, lim in DB_EXPORT.items():
+        cur = db.execute(f"SELECT * FROM (SELECT rowid AS _r, * FROM {tbl} ORDER BY rowid DESC LIMIT ?) ORDER BY _r", (lim,))
+        cols = [c[0] for c in cur.description][1:]
+        tables[tbl] = {"cols": cols, "rows": [list(r[1:]) for r in cur.fetchall()]}
+    data["db"] = tables
+    return data
+
+
+def import_db(tables: dict) -> int:
+    n = 0
+    for tbl, d in (tables or {}).items():
+        if tbl not in DB_EXPORT:
+            continue
+        cols = [c for c in d.get("cols", []) if re.fullmatch(r"[a-z_]+", c)]
+        if not cols or len(cols) != len(d["cols"]):
+            continue
+        sql = f"INSERT OR IGNORE INTO {tbl}({','.join(cols)}) VALUES({','.join('?' * len(cols))})"
+        for r in d.get("rows", []):
+            if len(r) == len(cols):
+                db.execute(sql, r); n += 1
+    return n
 
 
 IMG_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 @app.get("/media/{iid}")
-async def media(iid: str, dl: int = 0):
-    item = info.images.get(iid) if IMG_ID_RE.match(iid) else None
+async def media(request: Request, iid: str, dl: int = 0):
+    item = info.images.get(iid) if IMG_ID_RE.match(iid) and get_sid(request) else None
     if not item:
         raise HTTPException(404)
     headers = {"Cache-Control": "public, max-age=86400"}
@@ -564,7 +626,7 @@ async def room_post(body: SendIn, request: Request):
     sid = require_sid(request)
     if q("SELECT 1 FROM bans WHERE sid=?", (sid,)):
         raise HTTPException(403, "Вам запрещено писать в общий чат")
-    if ROOM_WIFI_ONLY and not q("SELECT 1 FROM devices WHERE sid=?", (sid,)):
+    if ROOM_WIFI_ONLY and not from_wifi(request, sid):
         raise HTTPException(403, "Писать в общий чат можно только подключившись к Free Wifi")
     text = clean(body.text, ROOM_MAX)
     if not text:
