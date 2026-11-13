@@ -152,9 +152,9 @@ async def magnetic(c):
     return {"kp": float(last[7])}
 
 
-SOURCES = {  # ключ: (функция, ttl секунд)
-    "weather": (weather_any, 900), "air": (air, 1800), "eskhata": (eskhata, 1800),
-    "cbr": (cbr, 3600), "namaz": (namaz, 3600 * 3), "magnetic": (magnetic, 1800),
+SOURCES = {  # ключ: (функция, ttl секунд) — редко, чтобы не злоупотреблять бесплатными API
+    "weather": (weather_any, 2 * 3600), "air": (air, 2 * 3600), "eskhata": (eskhata, 2 * 3600),
+    "cbr": (cbr, 2 * 3600), "namaz": (namaz, 12 * 3600), "magnetic": (magnetic, 2 * 3600),
 }
 
 
