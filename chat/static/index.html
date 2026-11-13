@@ -49,12 +49,12 @@
     </article>
 
     <article class="card wide gallery" id="card-photos" hidden>
-      <h3>📸 Фото дня <span id="photo-date" class="muted"></span></h3>
+      <h3>📸 Акси рӯз <span id="photo-date" class="muted"></span></h3>
       <div class="slides" id="slides"></div>
       <div class="slide-nav">
-        <button type="button" class="nav-btn" id="prev" aria-label="Назад">‹</button>
+        <button type="button" class="nav-btn" id="prev" aria-label="Ба қафо">‹</button>
         <div class="dots" id="dots"></div>
-        <button type="button" class="nav-btn" id="next" aria-label="Вперёд">›</button>
+        <button type="button" class="nav-btn" id="next" aria-label="Ба пеш">›</button>
       </div>
       <div class="caption" id="caption"></div>
       <div class="muted small" id="credit"></div>
@@ -62,6 +62,11 @@
 
     <article class="card wide" id="card-otd" hidden>
       <h3>📅 В этот день</h3>
+      <div class="chips" id="otd-filter">
+        <button type="button" data-f="all" class="on">Всё</button>
+        <button type="button" data-f="islam">☪️ Ислам</button>
+        <button type="button" data-f="general">🌍 Общее</button>
+      </div>
       <ul class="otd" id="otd"></ul>
     </article>
 

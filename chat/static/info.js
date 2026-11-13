@@ -257,14 +257,74 @@
     if (!p) return;
     $("photo-date").textContent = p.date;
     $("caption").textContent = p.title;
-    $("credit").textContent = [p.author, p.license].filter(Boolean).join(" · ") + " · Wikimedia Commons";
+    $("credit").textContent = (p.author ? "Муаллиф: " + p.author : "") + (p.license ? " · " + p.license : "") + " · Wikimedia Commons";
     [...$("dots").children].forEach((d, k) => d.classList.toggle("on", k === i));
   };
-  const current = () => Math.round($("slides").scrollLeft / Math.max(1, $("slides").clientWidth));
-  const go = (i) => {
-    const s = $("slides"), n = photos.length;
-    s.scrollTo({ left: ((i + n) % n) * s.clientWidth });
+  let idx = 0, autoT = null, pausedUntil = 0;
+  const slideLeft = (i) => {
+    const kids = $("slides").children;
+    return kids[i] ? kids[i].offsetLeft - kids[0].offsetLeft : 0;
   };
+  const current = () => {
+    const s = $("slides"), kids = s.children;
+    let best = 0, dist = Infinity;
+    for (let i = 0; i < kids.length; i++) {
+      const d = Math.abs(slideLeft(i) - s.scrollLeft);
+      if (d < dist) { dist = d; best = i; }
+    }
+    return best;
+  };
+  const go = (i, user = true) => {
+    const n = photos.length;
+    if (!n) return;
+    idx = ((i % n) + n) % n;                     // по кругу: из конца в начало и обратно
+    $("slides").scrollTo({ left: slideLeft(idx), behavior: "smooth" });
+    showCaption(idx);
+    if (user) pausedUntil = Date.now() + 15000;  // гость листает сам — автопрокрутку на паузу
+  };
+  const startAuto = () => {
+    clearInterval(autoT);
+    autoT = setInterval(() => {
+      if (Date.now() > pausedUntil && photos.length > 1 && !document.hidden) go(idx + 1, false);
+    }, 5000);
+  };
+
+  const otdData = { general: [], islam: [], hijri: null };
+  let otdFilter = "all";
+  const plural = (n, a, b, c) => { const m = n % 10, h = n % 100; return m === 1 && h !== 11 ? a : m >= 2 && m <= 4 && (h < 10 || h >= 20) ? b : c; };
+  const otdItem = (year, text, isl) => {
+    const li = el("li", isl ? "isl" : null);
+    li.append(el("b", null, year), document.createTextNode(text));
+    return li;
+  };
+  const renderOtd = () => {
+    const items = [], hj = otdData.hijri;
+    const showIsl = otdFilter !== "general", showGen = otdFilter !== "islam";
+    if (showIsl) {
+      if (hj) {
+        items.push(el("li", "sect", "☪️ " + hj.day + " " + hj.month + " " + hj.year + " г. х."));
+        hj.today.forEach((e) => items.push(otdItem("Сегодня", e, true)));
+        hj.upcoming.forEach((u) => items.push(otdItem(u.days ? "через " + u.days + " " + plural(u.days, "день", "дня", "дней") : "Завтра", u.text, true)));
+      }
+      otdData.islam.forEach((o) => items.push(otdItem(o.year, o.text, true)));
+    }
+    if (showGen && otdData.general.length) {
+      if (showIsl) items.push(el("li", "sect", "🌍 Общее"));
+      const islTexts = new Set(otdData.islam.map((o) => o.text));
+      otdData.general.filter((o) => !islTexts.has(o.text)).forEach((o) => items.push(otdItem(o.year, o.text, false)));
+    }
+    if (!items.length) items.push(el("li", "sect", "Сегодня ничего не найдено"));
+    $("card-otd").hidden = false;
+    $("otd").replaceChildren(...items);
+  };
+  $("otd-filter").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    otdFilter = b.dataset.f;
+    [...$("otd-filter").children].forEach((x) => x.classList.toggle("on", x === b));
+    renderOtd();
+  });
+
   const renderWiki = (w) => {
     if (!w) return;
     if (w.photos && w.photos.length) {
@@ -280,23 +340,35 @@
           s.appendChild(img);
           return s;
         }));
-        $("dots").replaceChildren(...photos.map(() => el("span")));
+        $("dots").replaceChildren(...photos.map((_, i) => {
+          const dot = el("span"); dot.addEventListener("click", () => go(i)); return dot;
+        }));
+        idx = 0;
         showCaption(0);
       }
     }
-    if (w.onthisday && w.onthisday.length) {
-      $("card-otd").hidden = false;
-      $("otd").replaceChildren(...w.onthisday.map((o) => {
-        const li = el("li");
-        li.append(el("b", null, o.year), document.createTextNode(o.text));
-        return li;
-      }));
-    }
+    otdData.general = w.onthisday || [];
+    otdData.islam = w.islam || [];
+    renderOtd();
   };
-  let scrollT;
-  $("slides").addEventListener("scroll", () => { clearTimeout(scrollT); scrollT = setTimeout(() => showCaption(current()), 80); });
+  let scrollT, touchX = null, touchIdx = 0;
+  const sl = $("slides");
+  sl.addEventListener("scroll", () => {
+    clearTimeout(scrollT);
+    scrollT = setTimeout(() => { idx = current(); showCaption(idx); }, 80);
+  });
+  // свайп за край: с последней на первую и с первой на последнюю
+  sl.addEventListener("touchstart", (e) => { touchX = e.touches[0].clientX; touchIdx = current(); pausedUntil = Date.now() + 15000; }, { passive: true });
+  sl.addEventListener("touchend", (e) => {
+    if (touchX == null) return;
+    const dx = e.changedTouches[0].clientX - touchX, n = photos.length;
+    touchX = null;
+    if (touchIdx === n - 1 && dx < -40) go(0);
+    else if (touchIdx === 0 && dx > 40) go(n - 1);
+  }, { passive: true });
   $("prev").addEventListener("click", () => go(current() - 1));
   $("next").addEventListener("click", () => go(current() + 1));
+  startAuto();
 
   const renderNews = (text) => {
     const box = $("news");
@@ -338,6 +410,7 @@
       renderMag(d.magnetic);
       renderNews(d.news);
       renderQuran(d.quran);
+      otdData.hijri = d.hijri || null;
       renderWiki(d.wiki);
       renderOnline(d.online);
       renderProverb();

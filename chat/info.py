@@ -179,7 +179,8 @@ async def namaz(c):
     names = [("Фаджр", "Fajr"), ("Восход", "Sunrise"), ("Зухр", "Dhuhr"), ("Аср", "Asr"),
              ("Магриб", "Maghrib"), ("Иша", "Isha")]
     return {"times": [{"name": ru, "time": t[en]} for ru, en in names],
-            "hijri": f'{h["day"]} {h["month"]["en"]} {h["year"]}', "date": d["date"]["gregorian"]["date"]}
+            "hijri": f'{h["day"]} {h["month"]["en"]} {h["year"]}', "date": d["date"]["gregorian"]["date"],
+            "hd": int(h["day"]), "hm": int(h["month"]["number"]), "hy": int(h["year"])}
 
 
 async def magnetic(c):
@@ -254,6 +255,83 @@ async def _image(c, url: str) -> str | None:
     return iid
 
 
+_tg: dict[str, str] = {}  # id фото -> подпись на таджикском
+
+
+async def to_tajik(c, iid: str, text: str) -> str:
+    """Перевод подписи на таджикский (MyMemory, раз на фото, кешируется)."""
+    if not text or iid in _tg:
+        return _tg.get(iid, text)
+    try:
+        r = await c.get("https://api.mymemory.translated.net/get",
+                        params={"q": text[:480], "langpair": "en|tg"}, timeout=15)
+        d = r.json()
+        tr = (d.get("responseData") or {}).get("translatedText") or ""
+        if d.get("responseStatus") == 200 and tr and "MYMEMORY WARNING" not in tr:
+            _tg[iid] = html.unescape(tr)
+            return _tg[iid]
+    except Exception as e:
+        print("translate", e)
+    return text
+
+
+ISLAM_RE = re.compile(
+    r"ислам|мусульман|мечет|халиф|пророк[а-я]* мухаммад|мухаммад[а-я]* ибн|мекк|медин[аеуы]|кааб|коран|хадж|"
+    r"рамадан|рамазан|ураза|курбан|имам[а-я]*\b|шариат|хиджр|аллах|муфти|медресе|суфи|сунн[иы]т|шиит|"
+    r"осман[а-я]* (импер|султан|халиф)|султан|саладин|ибн син|авиценн|аль-бухари|аль-хорезми|аль-фараби|"
+    r"улугбек|джами\b|кордовск[а-я]* халиф|аббасид|омейяд|мавлид", re.I)
+_otd_all: dict[str, list] = {}
+
+
+async def otd_islam(c, d) -> list:
+    """Исламские факты этой даты из полной ленты «В этот день» (раз в день)."""
+    key = d.strftime("%m/%d")
+    if key not in _otd_all:
+        r = await c.get(f"https://api.wikimedia.org/feed/v1/wikipedia/ru/onthisday/all/{key}",
+                        headers=WIKI_UA, timeout=20)
+        r.raise_for_status()
+        j, found = r.json(), []
+        for kind in ("holidays", "selected", "events", "births", "deaths"):
+            for o in j.get(kind) or []:
+                txt = _strip_html(o.get("text", ""))
+                if ISLAM_RE.search(txt) and not any(f["text"] == txt for f in found):
+                    pre = {"births": "родился: ", "deaths": "умер: "}.get(kind, "")
+                    found.append({"year": o.get("year") or "", "text": (pre + txt)[:220]})
+        _otd_all.clear()
+        _otd_all[key] = found[:8]
+    return _otd_all[key]
+
+
+HIJRI_MONTHS = ["Мухаррам", "Сафар", "Раби аль-авваль", "Раби ас-сани", "Джумада аль-уля", "Джумада ас-сани",
+                "Раджаб", "Шаабан", "Рамадан", "Шавваль", "Зуль-када", "Зуль-хиджа"]
+HIJRI_EVENTS = [  # (день, месяц, событие)
+    (1, 1, "Новый год по хиджре"),
+    (10, 1, "Ашура — день поста; Аллах спас пророка Мусу (мир ему)"),
+    (12, 3, "Мавлид — день рождения пророка Мухаммада (мир ему)"),
+    (27, 7, "Исра и Мирадж — ночное путешествие пророка (мир ему)"),
+    (15, 8, "Ночь середины Шаабана (Бараат)"),
+    (1, 9, "Начало месяца Рамадан"),
+    (17, 9, "Битва при Бадре (2 г. х.)"),
+    (27, 9, "Ляйлят аль-Кадр — Ночь предопределения"),
+    (1, 10, "Иди Рамазон — праздник разговения"),
+    (8, 12, "Начало хаджа — день Тарвия"),
+    (9, 12, "День Арафа"),
+    (10, 12, "Иди Қурбон — праздник жертвоприношения"),
+]
+
+
+def hijri_facts(n: dict | None) -> dict | None:
+    if not n or "hm" not in n:
+        return None
+    d, m = n["hd"], n["hm"]
+    pos = (m - 1) * 29.53 + d
+    today = [e for dd, mm, e in HIJRI_EVENTS if (dd, mm) == (d, m)]
+    up = sorted(((round(((mm - 1) * 29.53 + dd - pos) % 354.37), e) for dd, mm, e in HIJRI_EVENTS
+                 if (dd, mm) != (d, m)))[:3]
+    return {"month": HIJRI_MONTHS[m - 1], "day": d, "year": n["hy"], "today": today,
+            "upcoming": [{"days": days, "text": e} for days, e in up]}
+
+
 async def wiki(c):
     today = datetime.now(timezone(timedelta(hours=5))).date()
     photos, keep = [], set()
@@ -272,7 +350,7 @@ async def wiki(c):
         if not iid:
             continue
         keep.add(iid)
-        desc = _strip_html((im.get("description") or {}).get("text", ""))
+        desc = await to_tajik(c, iid, _strip_html((im.get("description") or {}).get("text", ""))[:200])
         photos.append({
             "id": iid, "date": d.strftime("%d.%m"),
             "title": desc[:200] or im.get("title", "").removeprefix("File:").rsplit(".", 1)[0],
@@ -281,15 +359,21 @@ async def wiki(c):
         })
     for k in [k for k in images if k not in keep]:  # чистим память
         images.pop(k, None)
+        _tg.pop(k, None)
     otd = []
     try:
         for o in ((await _feed(c, today)).get("onthisday") or [])[:6]:
             otd.append({"year": o.get("year"), "text": _strip_html(o.get("text", ""))[:220]})
     except Exception as e:
         print("onthisday", e)
+    islam = []
+    try:
+        islam = await otd_islam(c, today)
+    except Exception as e:
+        print("otd islam", e)
     if not photos and not otd:
         raise RuntimeError("wikimedia: пусто")
-    return {"photos": photos, "onthisday": otd}
+    return {"photos": photos, "onthisday": otd, "islam": islam}
 
 
 SOURCES = {  # ключ: (функция, ttl секунд) — редко, чтобы не злоупотреблять бесплатными API
@@ -319,6 +403,7 @@ async def collect(client: httpx.AsyncClient) -> dict:
             hm = datetime.now(timezone(timedelta(hours=5))).strftime("%H:%M")
             w["is_day"] = w["sunrise"] <= hm < w["sunset"]
         out["weather"] = w
+    out["hijri"] = hijri_facts(out.get("namaz"))
     out["now"] = time.time()
     out["errors"] = dict(errors)
     stamps = [(_cache[k][0], SOURCES[k][1]) for k in SOURCES if k in _cache]
