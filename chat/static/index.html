@@ -12,6 +12,8 @@
     <div class="sub">Бесплатный Wi-Fi · Турсунзаде</div>
   </header>
 
+  <div id="news" class="news" hidden><span class="news-ico">📢</span><span id="news-text"></span></div>
+
   <!-- «За окном»: небо по текущей погоде и времени суток -->
   <section id="window" class="window day clear">
     <div class="sky" id="sky" aria-hidden="true"></div>
@@ -32,21 +34,21 @@
   </section>
 
   <section class="cards" id="cards">
-    <article class="card" id="card-eskhata" hidden>
-      <h3>🏦 Курс в Эсхата <span id="esh-date" class="muted"></span></h3>
-      <table id="esh-table"><thead><tr><th></th><th>Покупка</th><th>Продажа</th></tr></thead><tbody></tbody></table>
-      <div id="esh-transfer" class="muted small"></div>
-    </article>
-
-    <article class="card wide" id="card-cbr" hidden>
-      <h3>💱 Биржевой курс <span id="cbr-date" class="muted"></span></h3>
-      <div class="tiles" id="cbr"></div>
+    <article class="card wide quran" id="card-quran" hidden>
+      <h3>📖 Аят дня <span id="quran-ref" class="muted"></span></h3>
+      <div id="quran-body"></div>
+      <div class="muted small">Перевод смыслов: Э. Кулиев</div>
     </article>
 
     <article class="card" id="card-namaz" hidden>
       <h3>🕌 Время намаза <span id="hijri" class="muted"></span></h3>
       <div class="namaz" id="namaz"></div>
       <div id="namaz-next" class="next"></div>
+    </article>
+
+    <article class="card" id="card-sun" hidden>
+      <h3>🌅 Солнце</h3>
+      <div class="kv" id="sun"></div>
     </article>
 
     <article class="card" id="card-air" hidden>
@@ -61,9 +63,9 @@
       <div class="muted small" id="mag-desc"></div>
     </article>
 
-    <article class="card" id="card-sun" hidden>
-      <h3>🌅 Солнце</h3>
-      <div class="kv" id="sun"></div>
+    <article class="card wide proverb" id="card-proverb">
+      <h3>📜 Мудрость дня</h3>
+      <blockquote id="proverb"></blockquote>
     </article>
 
     <article class="card sos">
@@ -76,10 +78,21 @@
         <span>Единый номер</span><b>112</b>
       </div>
     </article>
+
+    <article class="card" id="card-eskhata" hidden>
+      <h3>🏦 Курс в Эсхата <span id="esh-date" class="muted"></span></h3>
+      <table id="esh-table"><thead><tr><th></th><th>Покупка</th><th>Продажа</th></tr></thead><tbody></tbody></table>
+      <div id="esh-transfer" class="muted small"></div>
+    </article>
+
+    <article class="card wide" id="card-cbr" hidden>
+      <h3>💱 Биржевой курс <span id="cbr-date" class="muted"></span></h3>
+      <div class="tiles" id="cbr"></div>
+    </article>
   </section>
 
   <section class="chat">
-    <h2>💬 Напишите нам</h2>
+    <h2>💬 Напишите нам <span id="online" class="online"></span></h2>
     <main id="log" aria-live="polite">
       <div class="hint">Напишите сообщение — администратор ответит здесь.</div>
     </main>

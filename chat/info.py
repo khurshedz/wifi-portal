@@ -156,9 +156,36 @@ async def magnetic(c):
     return {"kp": float(last[7])}
 
 
+# аят дня: (сура, с аята, по аят) — подборка известных аятов; текст берём из API, сами не пишем
+QURAN = [
+    (1, 1, 7), (112, 1, 4), (2, 255, 255), (94, 5, 8), (113, 1, 5), (114, 1, 6), (2, 286, 286),
+    (13, 28, 28), (103, 1, 3), (65, 2, 3), (2, 152, 153), (108, 1, 3), (3, 139, 139), (39, 53, 53),
+    (110, 1, 3), (2, 186, 186), (49, 13, 13), (93, 1, 11), (17, 23, 24), (2, 201, 201), (25, 63, 63),
+    (16, 97, 97), (20, 114, 114), (14, 7, 7), (2, 45, 45), (31, 18, 19), (40, 60, 60), (3, 8, 8),
+]
+
+
+def day_index() -> int:
+    return (datetime.now(timezone(timedelta(hours=5))).date() - datetime(2000, 1, 1).date()).days
+
+
+async def quran(c):
+    s, a, b = QURAN[day_index() % len(QURAN)]
+    r = await c.get(f"https://api.alquran.cloud/v1/surah/{s}/editions/quran-uthmani,ru.kuliev",
+                    params={"offset": a - 1, "limit": b - a + 1}, timeout=15, follow_redirects=True)
+    ar, ru = r.json()["data"]
+    return {
+        "day": day_index(), "surah": s, "from": a, "to": b,
+        "name_ar": ar["name"], "name_en": ar["englishName"], "name_tr": ar.get("englishNameTranslation"),
+        "ayahs": [{"n": x["numberInSurah"], "ar": x["text"], "ru": y["text"]}
+                  for x, y in zip(ar["ayahs"], ru["ayahs"])],
+    }
+
+
 SOURCES = {  # ключ: (функция, ttl секунд) — редко, чтобы не злоупотреблять бесплатными API
     "weather": (weather_any, 2 * 3600), "air": (air, 2 * 3600), "eskhata": (eskhata, 2 * 3600),
     "cbr": (cbr, 2 * 3600), "namaz": (namaz, 12 * 3600), "magnetic": (magnetic, 2 * 3600),
+    "quran": (quran, 12 * 3600),
 }
 
 
@@ -171,6 +198,9 @@ async def collect(client: httpx.AsyncClient) -> dict:
     if out.get("namaz") and out["namaz"].get("date") != today:
         _cache.pop("namaz", None)
         out["namaz"] = await cached("namaz", SOURCES["namaz"][1], namaz, client)
+    if out.get("quran") and out["quran"].get("day") != day_index():  # новый день — новый аят
+        _cache.pop("quran", None)
+        out["quran"] = await cached("quran", SOURCES["quran"][1], quran, client)
     w, n = out.get("weather"), out.get("namaz")
     if w and n and not w.get("sunrise"):
         times = {x["name"]: x["time"] for x in n["times"]}

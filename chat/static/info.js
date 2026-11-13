@@ -187,6 +187,74 @@
     $("mag-desc").textContent = txt;
   };
 
+  const PROVERBS = [
+    "Капля за каплей — и образуется море.",
+    "Терпение — ключ к радости.",
+    "Сначала думай, потом говори.",
+    "Хороший сосед лучше дальнего родственника.",
+    "Дерево держится корнями, человек — друзьями.",
+    "Кто ищет — тот найдёт.",
+    "Слово — серебро, молчание — золото.",
+    "Гость в доме — радость в доме.",
+    "Не торопись: поспешишь — людей насмешишь.",
+    "Один камень стены не построит.",
+    "Знание — богатство, которое не украдут.",
+    "Где согласие, там и благополучие.",
+    "Доброе слово и камень растопит.",
+    "Учись у того, кто знает больше тебя.",
+    "Труд кормит, а лень портит.",
+    "Друг познаётся в беде.",
+    "Чистая вода — сладкая вода.",
+    "Хлеб — всему голова.",
+    "Мир держится на добрых людях.",
+    "Без труда не вытащишь и рыбку из пруда.",
+    "Тише едешь — дальше будешь.",
+    "Сделал дело — гуляй смело.",
+    "Уважай старших — и младшие будут уважать тебя.",
+    "Утро вечера мудренее.",
+    "Красота — в душе человека.",
+    "Не откладывай на завтра то, что можно сделать сегодня.",
+    "Сила — в единстве.",
+    "С хорошим человеком и дорога короче.",
+    "Мудрый ищет мудрость, глупый — уже нашёл.",
+    "Улыбка — ключ к любому сердцу.",
+    "Кто рано встаёт, тому Бог подаёт.",
+  ];
+  const dayIndex = () => {
+    const d = now().toLocaleDateString("en-CA", { timeZone: TZ });   // YYYY-MM-DD
+    return Math.floor(Date.parse(d) / 86400000);
+  };
+  const renderProverb = () => { $("proverb").textContent = PROVERBS[dayIndex() % PROVERBS.length]; };
+
+  const AR_DIGITS = "٠١٢٣٤٥٦٧٨٩";
+  const arNum = (n) => String(n).replace(/\d/g, (d) => AR_DIGITS[d]);
+  const renderQuran = (q) => {
+    if (!q || !q.ayahs || !q.ayahs.length) return;
+    $("card-quran").hidden = false;
+    const range = q.from === q.to ? q.from : q.from + "–" + q.to;
+    $("quran-ref").textContent = q.name_en + " " + q.surah + ":" + range;
+    $("quran-body").replaceChildren(...q.ayahs.map((a) => {
+      const box = el("div", "ayah");
+      const ar = el("div", "ar", a.ar);
+      ar.lang = "ar"; ar.dir = "rtl";
+      ar.appendChild(el("span", "n", "﴿" + arNum(a.n) + "﴾"));
+      box.append(ar, el("div", "ru", a.n + ". " + a.ru));
+      return box;
+    }));
+  };
+
+  const renderNews = (text) => {
+    const box = $("news");
+    if (!text) { box.hidden = true; return; }
+    $("news-text").textContent = text;
+    box.hidden = false;
+  };
+  const renderOnline = (n) => {
+    if (!n) { $("online").textContent = ""; return; }
+    const w = n % 10 === 1 && n % 100 !== 11 ? "гость" : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) ? "гостя" : "гостей";
+    $("online").textContent = "на сайте: " + n + " " + w;
+  };
+
   const load = async () => {
     try {
       const r = await fetch("/api/info", { credentials: "same-origin" });
@@ -200,6 +268,10 @@
       renderNamaz(d.namaz);
       renderAir(d.air);
       renderMag(d.magnetic);
+      renderNews(d.news);
+      renderQuran(d.quran);
+      renderOnline(d.online);
+      renderProverb();
     } catch (e) {
       $("wx-desc").textContent = "нет данных, повторим…";
     }
@@ -208,5 +280,6 @@
   tick();
   setInterval(tick, 1000);
   load();
-  setInterval(load, 10 * 60 * 1000);
+  renderProverb();
+  setInterval(load, 60 * 1000);   // данные всё равно из кеша сервера; часто — ради объявлений и счётчика
 })();

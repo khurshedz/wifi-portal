@@ -5,6 +5,7 @@
 @media (prefers-color-scheme: dark) {
   :root { --ink: #f1ece4; --paper: #171512; --muted: #a39a8a; --card: #23201c; --line: rgba(255,255,255,.12); }
 }
+[hidden] { display: none !important; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: var(--paper); color: var(--ink); max-width: 760px; margin: 0 auto;
@@ -80,7 +81,9 @@ td:first-child, th:first-child { text-align: left; font-weight: 600; }
 
 /* ---------- чат ---------- */
 .chat { margin: 0 12px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; }
-.chat h2 { font-size: 15px; padding: 12px 14px 0; }
+.chat h2 { font-size: 15px; padding: 12px 14px 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.online { font-size: 12px; font-weight: 400; color: var(--muted); }
+.online::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #3cb371; margin-right: 5px; vertical-align: 1px; }
 main { height: 46vh; min-height: 240px; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
 .hint { color: var(--muted); font-size: 14px; text-align: center; margin: auto 0; }
 .msg { max-width: 82%; padding: 8px 12px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; line-height: 1.35; }
@@ -110,3 +113,18 @@ button.icon { background: transparent; font-size: 22px; padding: 4px 6px; }
   .card { padding: 10px; } #card-eskhata, #card-namaz, .sos, .card.wide { grid-column: 1 / -1; }
   .tiles { grid-template-columns: 1fr 1fr; } .tile .val { font-size: 19px; }
 }
+
+/* объявление */
+.news { margin: 0 12px 10px; padding: 10px 14px; border-radius: 14px; background: var(--gold); color: #fff; font-size: 15px; display: flex; gap: 8px; align-items: flex-start; white-space: pre-wrap; word-wrap: break-word; animation: pop .4s ease-out; }
+.news-ico { font-size: 18px; }
+@keyframes pop { from { transform: scale(.97); opacity: 0; } }
+/* мудрость дня */
+.proverb blockquote { font-family: Georgia, "Times New Roman", serif; font-size: 18px; font-style: italic; line-height: 1.4; border-left: 3px solid var(--rust); padding-left: 12px; }
+.online:empty { display: none; }
+/* аят дня */
+.quran .ayah { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.quran .ayah:last-child { border-bottom: 0; }
+.quran .ar { font-family: "Amiri", "Scheherazade New", "Noto Naskh Arabic", "Traditional Arabic", "Geeza Pro", serif;
+  font-size: 26px; line-height: 1.9; text-align: right; direction: rtl; }
+.quran .ar .n { font-size: 15px; color: var(--gold); margin-right: 6px; }
+.quran .ru { font-size: 15px; line-height: 1.45; margin-top: 4px; }

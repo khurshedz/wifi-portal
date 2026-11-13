@@ -129,6 +129,36 @@ async def ensure_topic(sid: str) -> tuple[int, int]:
         return num, topic["message_thread_id"]
 
 
+NEWS_MAX = 500
+
+
+async def set_news(m: dict, text: str) -> None:
+    """/news текст — объявление на странице; /news без текста — убрать."""
+    body = clean(text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else "", NEWS_MAX)
+    if body:
+        q("INSERT OR REPLACE INTO kv VALUES('news',?)", (body,))
+        reply = "📢 Объявление на странице обновлено"
+    else:
+        q("DELETE FROM kv WHERE k='news'")
+        reply = "📢 Объявление убрано"
+    try:
+        await tg("sendMessage", chat_id=TG_CHAT_ID, text=reply, reply_to_message_id=m["message_id"],
+                 **({"message_thread_id": m["message_thread_id"]} if m.get("is_topic_message") else {}))
+    except Exception as e:
+        print("news reply error:", e)
+
+
+# кто сейчас на странице: sid -> время последнего опроса
+online: dict[str, float] = {}
+
+
+def online_count() -> int:
+    edge = time.time() - 90
+    for k in [k for k, v in online.items() if v < edge]:
+        online.pop(k, None)
+    return len(online)
+
+
 async def poll_telegram():
     """Забирает ответы из тем группы и кладёт их в историю гостя."""
     offset = int((q("SELECT v FROM kv WHERE k='offset'") or [["0"]])[0][0])
@@ -140,9 +170,14 @@ async def poll_telegram():
                 m = u.get("message") or {}
                 if m.get("chat", {}).get("id") != TG_CHAT_ID:
                     continue
-                if m.get("from", {}).get("is_bot") or not m.get("is_topic_message"):
+                if m.get("from", {}).get("is_bot"):
                     continue
                 text = m.get("text") or m.get("caption")
+                if text and re.match(r"^/news(@\w+)?(\s|$)", text):
+                    await set_news(m, text)
+                    continue
+                if not m.get("is_topic_message"):
+                    continue
                 if not text:
                     continue
                 row = q("SELECT num FROM guests WHERE topic_id=?", (m["message_thread_id"],))
@@ -242,7 +277,11 @@ async def index(request: Request):
 
 @app.get("/api/info")
 async def get_info():
-    return await info.collect(http)
+    data = await info.collect(http)
+    news = q("SELECT v FROM kv WHERE k='news'")
+    data["news"] = news[0][0] if news else None
+    data["online"] = online_count()
+    return data
 
 
 @app.get("/healthz")
@@ -305,6 +344,8 @@ async def send(body: SendIn, request: Request):
 @app.get("/api/messages")
 async def messages(request: Request, after: int = 0):
     sid = require_sid(request)
+    if len(online) < 10000:
+        online[sid] = time.time()
     row = q("SELECT num FROM guests WHERE sid=?", (sid,))
     if not row:
         return {"messages": []}
