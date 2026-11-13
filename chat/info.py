@@ -219,7 +219,8 @@ async def quran(c):
 # ---------- фото дня и «в этот день» (Wikimedia featured feed) ----------
 WIKI_UA = {"User-Agent": "wifi-portal/1.0 (github.com/khurshedz/wifi-portal)"}
 IMG_HOSTS = ("https://upload.wikimedia.org/", "https://thumb.wikimedia.org/")
-POTD_DAYS = 7
+POTD_DAYS = 7      # сколько фото в карусели
+POTD_POOL = 120    # из скольких последних дней выбираем; каждый час — новые 7
 _feed_by_date: dict[str, dict] = {}     # прошлые дни не меняются — храним
 images: dict[str, tuple[bytes, str]] = {}  # id -> (байты, content-type), отдаёт /media/{id}
 
@@ -236,7 +237,7 @@ async def _feed(c, d) -> dict:
     r = await c.get(f"https://api.wikimedia.org/feed/v1/wikipedia/ru/featured/{key}", headers=WIKI_UA, timeout=20)
     r.raise_for_status()
     _feed_by_date[key] = r.json()
-    for k in sorted(_feed_by_date)[:-POTD_DAYS - 2]:  # не копим старое
+    for k in sorted(_feed_by_date)[:-POTD_POOL - 2]:  # не копим старое
         _feed_by_date.pop(k, None)
     return _feed_by_date[key]
 
@@ -350,7 +351,8 @@ async def wiki(c):
             print("potd", d, e)
             return d, {}, None
 
-    days = [today - timedelta(days=i) for i in range(POTD_DAYS)]
+    hour = int(time.time() // 3600)  # каждый час — другой набор из пула
+    days = [today - timedelta(days=(hour * POTD_DAYS + k) % POTD_POOL) for k in range(POTD_DAYS)]
     for d, im, iid in await asyncio.gather(*(one(d) for d in days)):
         if not iid:
             continue

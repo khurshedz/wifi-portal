@@ -303,11 +303,15 @@ IMG_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 @app.get("/media/{iid}")
-async def media(iid: str):
+async def media(iid: str, dl: int = 0):
     item = info.images.get(iid) if IMG_ID_RE.match(iid) else None
     if not item:
         raise HTTPException(404)
-    return Response(item[0], media_type=item[1], headers={"Cache-Control": "public, max-age=86400"})
+    headers = {"Cache-Control": "public, max-age=86400"}
+    if dl:
+        ext = {"image/png": "png", "image/webp": "webp", "image/gif": "gif"}.get(item[1], "jpg")
+        headers["Content-Disposition"] = f'attachment; filename="foto-dnya-{iid[:6]}.{ext}"'
+    return Response(item[0], media_type=item[1], headers=headers)
 
 
 @app.get("/healthz")

@@ -256,6 +256,7 @@
     const p = photos[i];
     if (!p) return;
     $("photo-date").textContent = p.date;
+    $("save").href = "/media/" + p.id + "?dl=1";
     $("caption").textContent = p.title;
     $("caption-tg").textContent = p.title_tg ? "🇹🇯 " + p.title_tg : "";
     $("credit").textContent = (p.author ? "Автор: " + p.author : "") + (p.license ? " · " + p.license : "") + " · Wikimedia Commons";
