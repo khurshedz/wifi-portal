@@ -353,8 +353,13 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 
 
 def client_ip(request: Request) -> str:
-    """Реальный IP клиента. Прокси Render дописывает адрес СПРАВА в X-Forwarded-For,
-    поэтому берём самый правый публичный адрес — левые части клиент может подделать."""
+    """Реальный IP клиента. Перед Render стоит Cloudflare: он сам ставит CF-Connecting-IP
+    (значение от клиента перезаписывается). Запасной вариант — самый правый публичный адрес в XFF."""
+    cf = request.headers.get("cf-connecting-ip", "").strip()
+    try:
+        return str(ipaddress.ip_address(cf))
+    except ValueError:
+        pass
     for part in reversed(request.headers.get("x-forwarded-for", "").split(",")):
         try:
             ip = ipaddress.ip_address(part.strip())
@@ -371,6 +376,7 @@ WIFI_IPS = {x.strip() for x in os.environ.get("WIFI_IPS", "").split(",") if x.st
 
 def from_wifi(request: Request, sid: str) -> bool:
     if q("SELECT 1 FROM devices WHERE sid=?", (sid,)):
+        q("INSERT OR REPLACE INTO kv VALUES('wifi_ip',?)", (client_ip(request),))  # уточнить IP точки
         return True
     ip = client_ip(request)
     if ip in WIFI_IPS:
@@ -544,7 +550,7 @@ async def healthz():
 
 @app.get("/static/{name}")
 async def static(name: str):
-    if name not in {"chat.js", "chat.css", "info.js"}:
+    if name not in {"chat.js", "chat.css", "info.js", "game.js"}:
         raise HTTPException(404)
     return FileResponse(BASE / "static" / name)
 

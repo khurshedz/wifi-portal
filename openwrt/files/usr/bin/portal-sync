@@ -50,7 +50,7 @@ full_sync() {
     fetch "$SRC/" | sed 's|<html lang="ru">|<html lang="ru" data-api="/cgi-bin/portal">|' > "$NEW/index.html" || return 1
     grep -q 'data-api=' "$NEW/index.html" || return 1
     fetch -o "$NEW/info.json" "$SRC/api/info" || return 1
-    for f in chat.css info.js chat.js; do fetch -o "$NEW/static/$f" "$SRC/static/$f" || return 1; done
+    for f in chat.css info.js chat.js game.js; do fetch -o "$NEW/static/$f" "$SRC/static/$f" || return 1; done
     for id in $(grep -o '"id":"[0-9a-f]\{16\}"' "$NEW/info.json" | cut -d'"' -f4 | sort -u); do
         if [ -f "$DIR/media/$id" ]; then             # уже скачано — не качаем снова
             cp "$DIR/media/$id" "$DIR/media/$id.type" "$NEW/media/" 2>/dev/null

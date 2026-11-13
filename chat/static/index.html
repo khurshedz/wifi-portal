@@ -158,14 +158,15 @@
     </form>
   </section>
 
-  <div class="game-tip">
-    🎮 Скучно? В браузере <b>Opera</b> наберите <code>opera://jump</code> — мини-игра, работает без интернета
-    <button type="button" id="copy-jump" class="copy-btn">Копировать</button>
-  </div>
+  <section class="card game-card">
+    <h3>🎮 Барашек-прыгун <span class="muted">работает без интернета</span></h3>
+    <canvas id="game" tabindex="0" aria-label="Мини-игра: барашек прыгает через камни"></canvas>
+  </section>
 
   <footer class="refresh" id="refresh"></footer>
 
   <script src="/static/info.js"></script>
   <script src="/static/chat.js"></script>
+  <script src="/static/game.js"></script>
 </body>
 </html>

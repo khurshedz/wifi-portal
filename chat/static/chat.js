@@ -153,13 +153,6 @@
   });
   $("emoji-btn").addEventListener("click", () => { emojis.hidden = !emojis.hidden; });
 
-  $("copy-jump").addEventListener("click", async (e) => {
-    const b = e.currentTarget;
-    try { await navigator.clipboard.writeText("opera://jump"); b.textContent = "Скопировано ✓"; }
-    catch (err) { b.textContent = "opera://jump"; }
-    setTimeout(() => { b.textContent = "Копировать"; }, 2500);
-  });
-
   api("/api/me").then((d) => showMe(d.num, nameEl.value.trim())).catch(() => {});
   poll();
   setInterval(poll, 3000);

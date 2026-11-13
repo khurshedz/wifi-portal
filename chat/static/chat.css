@@ -178,3 +178,6 @@ button.icon { background: transparent; font-size: 22px; padding: 4px 6px; }
 .news-list .meta { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
 .news-list .near { color: var(--rust); font-weight: 600; }
 .news-list p { font-size: 13px; color: var(--muted); line-height: 1.45; margin-top: 6px; }
+/* игра */
+.game-card { margin: 12px 16px 0; }
+#game { width: 100%; aspect-ratio: 3 / 1; display: block; border-radius: 12px; touch-action: manipulation; cursor: pointer; outline: none; }
