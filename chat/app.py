@@ -474,6 +474,18 @@ async def get_info(request: Request):
     return data
 
 
+@app.get("/api/diag-ip")
+async def diag_ip(request: Request):
+    """Диагностика: какие адресные заголовки приходят через прокси Render (только по ключу)."""
+    if not (UAM_SECRET and hmac.compare_digest(request.headers.get("x-cache-key", ""), cache_key())):
+        raise HTTPException(404)
+    h = request.headers
+    return {"xff": h.get("x-forwarded-for"), "cf": h.get("cf-connecting-ip"), "true": h.get("true-client-ip"),
+            "real": h.get("x-real-ip"), "client": request.client.host if request.client else None,
+            "computed": client_ip(request), "wifi_ip": (q("SELECT v FROM kv WHERE k='wifi_ip'") or [[None]])[0][0],
+            "wifi_ips_env": sorted(WIFI_IPS)}
+
+
 DB_EXPORT = {  # таблица -> сколько последних строк передавать новой версии
     "guests": 100000, "devices": 100000, "bans": 100000, "room_names": 100000, "kv": 1000,
     "room": 1000, "messages": 5000,
