@@ -80,7 +80,7 @@
     if (!w) { $("wx-desc").textContent = "погода недоступна"; return; }
     const [dayIcon, nightIcon, desc, kind] = WMO(w.code);
     const m = minutesOfDay(now());
-    const rise = toMin(w.sunrise), set = toMin(w.sunset);
+    const rise = w.sunrise ? toMin(w.sunrise) : 420, set = w.sunset ? toMin(w.sunset) : 1050;
     const isDusk = Math.abs(m - set) < 40 || Math.abs(m - rise) < 30;
     const isNight = !w.is_day;
     $("wx-icon").textContent = isNight ? nightIcon : dayIcon;
@@ -94,6 +94,7 @@
     );
     paintSky(kind, isNight, isDusk);
 
+    if (!w.sunrise || !w.sunset) return;
     $("card-sun").hidden = false;
     const len = set - rise;
     $("sun").replaceChildren(

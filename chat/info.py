@@ -57,6 +57,43 @@ async def weather(c):
     }
 
 
+MET_UA = {"User-Agent": "wifi-portal/1.0 github.com/khurshedz/wifi-portal"}
+MET_CODES = [  # symbol_code met.no -> WMO-подобный код для фронта
+    ("thunder", 95), ("snowshowers", 85), ("snow", 73), ("sleet", 67), ("rainshowers", 80),
+    ("heavyrain", 65), ("lightrain", 61), ("rain", 63), ("fog", 45), ("partlycloudy", 2),
+    ("cloudy", 3), ("fair", 1), ("clearsky", 0),
+]
+
+
+async def weather_met(c):
+    """Запасной источник: met.no (Open-Meteo режет общие IP облачных хостингов)."""
+    r = await c.get("https://api.met.no/weatherapi/locationforecast/2.0/compact",
+                    params={"lat": round(LAT, 2), "lon": round(LON, 2)}, headers=MET_UA, timeout=15)
+    ts = r.json()["properties"]["timeseries"]
+    now = ts[0]["data"]
+    det = now["instant"]["details"]
+    sym = (now.get("next_1_hours") or now.get("next_6_hours") or {}).get("summary", {}).get("symbol_code", "cloudy")
+    code = next((v for k, v in MET_CODES if sym.startswith(k)), 3)
+    temps = [p["data"]["instant"]["details"]["air_temperature"] for p in ts[:24]]
+    t, wind = det["air_temperature"], det["wind_speed"]
+    # «ощущается»: охлаждение ветром (для холода), иначе как есть
+    feels = 13.12 + 0.6215 * t - 11.37 * (wind * 3.6) ** 0.16 + 0.3965 * t * (wind * 3.6) ** 0.16 \
+        if t <= 10 and wind > 1.3 else t
+    return {
+        "temp": round(t), "feels": round(feels), "humidity": round(det["relative_humidity"]),
+        "wind": round(wind, 1), "code": code, "is_day": None if "_" not in sym else sym.endswith("_day"),
+        "max": round(max(temps)), "min": round(min(temps)), "sunrise": None, "sunset": None,
+    }
+
+
+async def weather_any(c):
+    try:
+        return await weather(c)
+    except Exception as e:
+        print("open-meteo failed, using met.no:", e)
+        return await weather_met(c)
+
+
 async def air(c):
     r = await c.get("https://air-quality-api.open-meteo.com/v1/air-quality", params={
         "latitude": LAT, "longitude": LON, "timezone": TZ, "current": "us_aqi,pm2_5"}, timeout=15)
@@ -116,7 +153,7 @@ async def magnetic(c):
 
 
 SOURCES = {  # ключ: (функция, ttl секунд)
-    "weather": (weather, 900), "air": (air, 1800), "eskhata": (eskhata, 1800),
+    "weather": (weather_any, 900), "air": (air, 1800), "eskhata": (eskhata, 1800),
     "cbr": (cbr, 3600), "namaz": (namaz, 3600 * 3), "magnetic": (magnetic, 1800),
 }
 
@@ -130,5 +167,13 @@ async def collect(client: httpx.AsyncClient) -> dict:
     if out.get("namaz") and out["namaz"].get("date") != today:
         _cache.pop("namaz", None)
         out["namaz"] = await cached("namaz", SOURCES["namaz"][1], namaz, client)
+    w, n = out.get("weather"), out.get("namaz")
+    if w and n and not w.get("sunrise"):
+        times = {x["name"]: x["time"] for x in n["times"]}
+        w = dict(w, sunrise=times.get("Восход"), sunset=times.get("Магриб"))
+        if w.get("is_day") is None and w["sunrise"] and w["sunset"]:
+            hm = datetime.now(timezone(timedelta(hours=5))).strftime("%H:%M")
+            w["is_day"] = w["sunrise"] <= hm < w["sunset"]
+        out["weather"] = w
     out["now"] = time.time()
     return out
