@@ -35,7 +35,7 @@
   // ---------- часы ----------
   const tick = () => {
     const d = now();
-    $("time").textContent = hm(d);
+    $("time").textContent = d.toLocaleTimeString("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit" });
     const ds = d.toLocaleDateString("ru-RU", { timeZone: TZ, weekday: "long", day: "numeric", month: "long" });
     $("date").textContent = ds.charAt(0).toUpperCase() + ds.slice(1);
     highlightNamaz(d);
@@ -128,11 +128,22 @@
   const renderCbr = (c) => {
     if (!c) return;
     $("card-cbr").hidden = false;
-    $("cbr").replaceChildren(
-      el("span", null, "1 $"), el("b", null, fmt(c.usd_tjs) + " сом."),
-      el("span", null, "1 $"), el("b", null, fmt(c.usd_rub) + " ₽"),
-      el("span", null, "1000 ₽"), el("b", null, fmt(c.rub1000_tjs) + " сом."),
-    );
+    if (c.date) $("cbr-date").textContent = "ЦБ РФ, " + c.date.split("-").reverse().join(".");
+    const tile = (from, val, unit) => {
+      const d = el("div", "tile");
+      const v = el("div", "val", val);
+      v.appendChild(el("small", null, unit));
+      d.append(el("div", "from", from), v);
+      return d;
+    };
+    const tiles = [
+      tile("🇺🇸 1 доллар", fmt(c.usd_tjs), "сом."),
+      tile("🇺🇸 1 доллар", fmt(c.usd_rub), "₽"),
+      tile("🇷🇺 1000 рублей", fmt(c.rub1000_tjs), "сом."),
+      tile("🇹🇯 1 сомони", fmt(c.tjs_rub), "₽"),
+    ];
+    if (c.eur_tjs) tiles.push(tile("🇪🇺 1 евро", fmt(c.eur_tjs), "сом."), tile("🇪🇺 1 евро", fmt(c.eur_rub), "₽"));
+    $("cbr").replaceChildren(...tiles);
   };
 
   const renderNamaz = (n) => {

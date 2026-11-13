@@ -125,11 +125,15 @@ async def eskhata(c):
 
 
 async def cbr(c):
-    v = (await c.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=15)).json()["Valute"]
+    j = (await c.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=15)).json()
+    v, r_date = j["Valute"], j.get("Date", "")[:10]
     rub_usd = v["USD"]["Value"]
     rub_tjs = v["TJS"]["Value"] / v["TJS"]["Nominal"]
+    rub_eur = v["EUR"]["Value"]
     return {"usd_tjs": round(rub_usd / rub_tjs, 2), "usd_rub": round(rub_usd, 2),
-            "rub1000_tjs": round(1000 / rub_tjs, 2)}
+            "eur_tjs": round(rub_eur / rub_tjs, 2), "eur_rub": round(rub_eur, 2),
+            "rub1000_tjs": round(1000 / rub_tjs, 2), "tjs_rub": round(rub_tjs, 2),
+            "date": r_date}
 
 
 async def namaz(c):
