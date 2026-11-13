@@ -17,6 +17,7 @@ UA = {"User-Agent": "Mozilla/5.0 (wifi-portal info)"}
 
 _cache: dict[str, tuple[float, object]] = {}
 _locks: dict[str, asyncio.Lock] = {}
+errors: dict[str, str] = {}  # последняя ошибка источника — для диагностики
 
 
 async def cached(key: str, ttl: int, fetch, client: httpx.AsyncClient):
@@ -31,12 +32,14 @@ async def cached(key: str, ttl: int, fetch, client: httpx.AsyncClient):
             val = await fetch(client)
         except Exception as e:
             print(f"info {key} error:", e)
+            errors[key] = f"{type(e).__name__}: {str(e)[:80]}"
             # отдаём устаревшее, если есть; повторим попытку через минуту
             if hit:
                 _cache[key] = (time.time() - ttl + 60, hit[1])
                 return hit[1]
             return None
         _cache[key] = (time.time(), val)
+        errors.pop(key, None)
         return val
 
 
@@ -210,4 +213,5 @@ async def collect(client: httpx.AsyncClient) -> dict:
             w["is_day"] = w["sunrise"] <= hm < w["sunset"]
         out["weather"] = w
     out["now"] = time.time()
+    out["errors"] = dict(errors)
     return out
