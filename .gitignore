@@ -1,0 +1,14 @@
+# секреты и локальные данные — не публиковать
+router_backup/
+.env
+*.env
+mygh.txt
+*token*
+*.orig
+
+# python / ide
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/

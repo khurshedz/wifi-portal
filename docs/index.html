@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Приветствие🌺</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --ink:    #0d0d0d;
+      --paper:  #f5f0e8;
+      --rust:   #c94f2c;
+      --gold:   #b89a4e;
+      --muted:  #7a7060;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: ui-monospace, 'DejaVu Sans Mono', Menlo, Consolas, monospace;
+      overflow: hidden;
+    }
+
+    /* ── noise grain overlay ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+      opacity: 0.04;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    /* ── decorative lines ── */
+    .line-h {
+      position: fixed;
+      left: 0; right: 0;
+      height: 1px;
+      background: var(--ink);
+      opacity: 0.12;
+    }
+    .line-h.top    { top: 48px; }
+    .line-h.bottom { bottom: 48px; }
+
+    .line-v {
+      position: fixed;
+      top: 0; bottom: 0;
+      width: 1px;
+      background: var(--ink);
+      opacity: 0.12;
+    }
+    .line-v.left  { left: 48px; }
+    .line-v.right { right: 48px; }
+
+    /* ── corner brackets ── */
+    .bracket {
+      position: fixed;
+      width: 24px; height: 24px;
+      opacity: 0.4;
+    }
+    .bracket::before, .bracket::after {
+      content: '';
+      position: absolute;
+      background: var(--rust);
+    }
+    .bracket::before { width: 2px; height: 100%; }
+    .bracket::after  { width: 100%; height: 2px; }
+
+    .bracket.tl { top: 40px; left: 40px; }
+    .bracket.tr { top: 40px; right: 40px; transform: scaleX(-1); }
+    .bracket.bl { bottom: 40px; left: 40px; transform: scaleY(-1); }
+    .bracket.br { bottom: 40px; right: 40px; transform: scale(-1); }
+
+    /* ── main layout ── */
+    .stage {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 0;
+      animation: fadeUp .9s cubic-bezier(.16,1,.3,1) both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(28px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── label ── */
+    .label {
+      font-size: 10px;
+      letter-spacing: .25em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 32px;
+      opacity: 0;
+      animation: fadeUp .7s .2s cubic-bezier(.16,1,.3,1) forwards;
+    }
+
+    /* ── headline ── */
+    .headline {
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: clamp(56px, 10vw, 112px);
+      font-weight: 700;
+      line-height: .95;
+      letter-spacing: -.02em;
+      text-align: center;
+      opacity: 0;
+      animation: fadeUp .8s .1s cubic-bezier(.16,1,.3,1) forwards;
+    }
+
+    .headline em {
+      font-style: italic;
+      font-weight: 400;
+      color: var(--rust);
+    }
+
+    /* ── rule ── */
+    .rule {
+      width: 64px;
+      height: 2px;
+      background: var(--gold);
+      margin: 36px auto;
+      opacity: 0;
+      animation: scaleIn .6s .4s cubic-bezier(.16,1,.3,1) forwards;
+    }
+
+    @keyframes scaleIn {
+      from { opacity: 0; transform: scaleX(0); }
+      to   { opacity: 1; transform: scaleX(1); }
+    }
+
+    /* ── sub ── */
+    .sub {
+      font-size: 13px;
+      letter-spacing: .06em;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.8;
+      max-width: 380px;
+      opacity: 0;
+      animation: fadeUp .7s .5s cubic-bezier(.16,1,.3,1) forwards;
+    }
+
+    /* ── time badge ── */
+    .time-badge {
+      margin-top: 48px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid rgba(13,13,13,.15);
+      padding: 8px 20px;
+      font-size: 11px;
+      letter-spacing: .12em;
+      color: var(--muted);
+      opacity: 0;
+      animation: fadeUp .7s .65s cubic-bezier(.16,1,.3,1) forwards;
+    }
+
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--rust);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: .4; transform: scale(.7); }
+    }
+
+    /* ── api hint ── */
+    .api-hint {
+      position: fixed;
+      bottom: 60px;
+      right: 64px;
+      font-size: 10px;
+      letter-spacing: .15em;
+      color: var(--muted);
+      opacity: 0;
+      animation: fadeUp .6s .9s cubic-bezier(.16,1,.3,1) forwards;
+    }
+
+    .api-hint a {
+      color: var(--rust);
+      text-decoration: none;
+      border-bottom: 1px solid currentColor;
+    }
+
+    .api-hint a:hover { opacity: .7; }
+
+    /* ── version ── */
+    .version {
+      position: fixed;
+      top: 60px;
+      left: 64px;
+      font-size: 10px;
+      letter-spacing: .15em;
+      color: var(--muted);
+      opacity: 0;
+      animation: fadeUp .6s .8s cubic-bezier(.16,1,.3,1) forwards;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- decorative grid -->
+  <div class="line-h top"></div>
+  <div class="line-h bottom"></div>
+  <div class="line-v left"></div>
+  <div class="line-v right"></div>
+  <div class="bracket tl"></div>
+  <div class="bracket tr"></div>
+  <div class="bracket bl"></div>
+  <div class="bracket br"></div>
+
+  <span class="version">FREE WI-FI</span>
+
+  <main class="stage">
+    <p class="label">Бесплатный Wi-Fi</p>
+
+    <h1 class="headline">
+      Асса&shy;лом,<br><em>Алекум.</em>
+    </h1>
+
+    <div class="rule"></div>
+
+    <p class="sub">
+      Добро пожаловать!<br>
+      Интернет скоро будет доступен.
+    </p>
+
+    <div class="time-badge">
+      <span class="dot"></span>
+      <span id="t"></span>
+    </div>
+  </main>
+
+<script>try{document.getElementById("t").textContent=new Date().toLocaleString("ru-RU",{day:"numeric",month:"long",hour:"2-digit",minute:"2-digit"})}catch(e){}</script>
+</body>
+</html>
