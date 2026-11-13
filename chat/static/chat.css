@@ -102,7 +102,7 @@ button { font: inherit; border: 0; border-radius: 12px; padding: 9px 14px; backg
 button:disabled { opacity: .5; }
 button.icon { background: transparent; font-size: 22px; padding: 4px 6px; }
 .me { font-size: 12px; color: var(--muted); white-space: nowrap; align-self: center; }
-.emojis { display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); gap: 2px; max-height: 140px; overflow-y: auto; }
+.emojis { display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); gap: 2px; max-height: 190px; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; padding: 4px; }
 .emojis button { background: transparent; font-size: 22px; padding: 4px; }
 .err { color: var(--rust); font-size: 13px; }
 .err:empty { display: none; }

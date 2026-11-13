@@ -2,7 +2,7 @@
   const $ = (id) => document.getElementById(id);
   const log = $("log"), form = $("form"), text = $("text"), nameEl = $("name"),
         err = $("err"), me = $("me"), sendBtn = $("send"), emojis = $("emojis");
-  const EMOJI = "😀😂😊😍🥰😎🤔😢😡👍👎🙏👋💪🔥❤️🎉✅❌⭐☕🍀🌸📶".match(/\p{Extended_Pictographic}️?/gu);
+  const EMOJI = "😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 😉 😌 😍 🥰 😘 😗 😋 😛 😜 🤪 😝 🤗 🤭 🤫 🤔 🤐 😐 😑 😶 😏 😒 🙄 😬 😴 🤤 😷 🤒 🤕 🥵 🥶 😎 🤓 🧐 😕 😟 🙁 😮 😯 😲 😳 🥺 😢 😭 😱 😖 😣 😞 😓 😩 😫 😤 😡 😠 🤬 😈 💀 🤡 👻 👽 🤖 💩 👍 👎 👌 ✌️ 🤞 🤟 🤘 👏 🙌 👐 🤝 🙏 💪 👋 🤙 ✍️ 👀 🫶 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 💕 💖 💯 💥 💫 💬 💤 ✨ 🔥 ⭐ 🌟 ⚡ 🎉 🎊 🎁 🎂 🍰 ☕ 🍵 🥤 🍉 🍇 🍎 🍑 🍒 🍋 🌰 🍞 🍕 🍔 🥗 🍲 🥟 🍚 🍖 🍗 🌸 🌹 🌷 🌼 🌻 🍀 🌿 🌳 🌙 ☀️ 🌤️ ☁️ 🌧️ ❄️ 🌈 🏔️ 🌊 🐱 🐶 🐴 🐑 🐓 🦅 🐟 🦋 ⚽ 🏀 🏆 🥇 🎵 🎶 📱 💻 📶 📷 🚗 🚕 🏠 🕌 🕋 ⏰ 💰 💵 ✅ ❌ ❓ ❗ 🆗 🆘 🇹🇯 🇷🇺 🇺🇿 🇰🇿 🇰🇬 🇹🇷".split(" ");
   let last = 0, polling = false;
 
   try { nameEl.value = localStorage.getItem("name") || ""; } catch (e) {}
