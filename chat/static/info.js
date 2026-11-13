@@ -170,12 +170,20 @@
   }
 
   const AQI = [[50, "🟢", "Хороший"], [100, "🟡", "Умеренный"], [150, "🟠", "Вреден для чувствительных"], [200, "🔴", "Вредный"], [300, "🟣", "Очень вредный"]];
+  const aqiInfo = (v) => AQI.find(([lim]) => v <= lim) || [0, "🟤", "Опасный"];
   const renderAir = (a) => {
     if (!a) return;
     $("card-air").hidden = false;
-    const [, e, txt] = AQI.find(([lim]) => a.aqi <= lim) || [0, "🟤", "Опасный"];
+    const [, e, txt] = aqiInfo(a.aqi);
     $("air").textContent = e + " " + a.aqi;
-    $("air-desc").textContent = txt + " · PM2.5 " + fmt(a.pm25, 1);
+    if (a.points && a.points.length) {
+      $("air-desc").replaceChildren(...a.points.map((p) => {
+        const [, pe] = aqiInfo(p.aqi);
+        return el("div", null, p.name + ": " + pe + " " + p.aqi + " · 🌡 " + p.temp + "°");
+      }), el("div", null, txt + " · " + a.source));
+    } else {
+      $("air-desc").textContent = txt + (a.pm25 != null ? " · PM2.5 " + fmt(a.pm25, 1) : "");
+    }
   };
 
   const renderMag = (g) => {

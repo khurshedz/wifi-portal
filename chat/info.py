@@ -6,6 +6,7 @@
 import asyncio
 import hashlib
 import html
+import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -98,11 +99,30 @@ async def weather_any(c):
         return await weather_met(c)
 
 
+IQAIR_KEY = os.environ.get("IQAIR_KEY", "")
+AIR_POINTS = {"Турсунзаде": (38.506497974, 68.224832434), "Душанбе": (38.53575, 68.77905)}  # как в telegram_bot
+
+
 async def air(c):
+    """IQAir (ключ в env IQAIR_KEY), иначе Open-Meteo только по Турсунзаде."""
+    if IQAIR_KEY:
+        async def point(name, lat, lon):
+            r = await c.get("http://api.airvisual.com/v2/nearest_city",
+                            params={"lat": lat, "lon": lon, "key": IQAIR_KEY}, timeout=15)
+            d = r.json()
+            if d.get("status") != "success":
+                raise RuntimeError(f"iqair: {str(d.get('data'))[:60]}")
+            cur = d["data"]["current"]
+            return {"name": name, "aqi": cur["pollution"]["aqius"], "temp": cur["weather"]["tp"]}
+        pts = await asyncio.gather(*(point(n, *ll) for n, ll in AIR_POINTS.items()), return_exceptions=True)
+        ok = [p for p in pts if isinstance(p, dict)]
+        if ok:
+            return {"aqi": ok[0]["aqi"], "pm25": None, "points": ok, "source": "IQAir"}
+        print("iqair failed:", pts)
     r = await c.get("https://air-quality-api.open-meteo.com/v1/air-quality", params={
         "latitude": LAT, "longitude": LON, "timezone": TZ, "current": "us_aqi,pm2_5"}, timeout=15)
     cur = r.json()["current"]
-    return {"aqi": cur["us_aqi"], "pm25": cur["pm2_5"]}
+    return {"aqi": cur["us_aqi"], "pm25": cur["pm2_5"], "points": None, "source": "Open-Meteo"}
 
 
 async def eskhata(c):
