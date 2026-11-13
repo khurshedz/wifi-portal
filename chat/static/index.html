@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Free Wi-Fi · чат</title>
+  <link rel="stylesheet" href="/static/chat.css">
+</head>
+<body>
+  <header>
+    <div class="title">Ассалом, <em>Алекум</em></div>
+    <div class="sub">Бесплатный Wi-Fi · напишите нам</div>
+  </header>
+
+  <main id="log" aria-live="polite">
+    <div class="hint">Напишите сообщение — администратор ответит здесь.</div>
+  </main>
+
+  <form id="form" autocomplete="off">
+    <div class="row">
+      <input id="name" maxlength="32" placeholder="Ваше имя (необязательно)">
+      <span id="me" class="me"></span>
+    </div>
+    <div id="emojis" class="emojis" hidden></div>
+    <div class="row">
+      <button type="button" id="emoji-btn" class="icon" aria-label="Смайлики">😊</button>
+      <textarea id="text" rows="1" maxlength="1000" placeholder="Введите текст…" required></textarea>
+      <button type="submit" id="send">Отправить</button>
+    </div>
+    <div id="err" class="err" role="alert"></div>
+  </form>
+
+  <script src="/static/chat.js"></script>
+</body>
+</html>

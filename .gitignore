@@ -12,3 +12,7 @@ __pycache__/
 .venv/
 venv/
 .idea/
+publish_github.sh
+chat/.env
+*.db
+*.db-*
