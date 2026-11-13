@@ -3,33 +3,103 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Free Wi-Fi · чат</title>
+  <title>Free Wi-Fi · Турсунзаде</title>
   <link rel="stylesheet" href="/static/chat.css">
 </head>
 <body>
   <header>
     <div class="title">Ассалом, <em>Алекум</em></div>
-    <div class="sub">Бесплатный Wi-Fi · напишите нам</div>
+    <div class="sub">Бесплатный Wi-Fi · Турсунзаде</div>
   </header>
 
-  <main id="log" aria-live="polite">
-    <div class="hint">Напишите сообщение — администратор ответит здесь.</div>
-  </main>
-
-  <form id="form" autocomplete="off">
-    <div class="row">
-      <input id="name" maxlength="32" placeholder="Ваше имя (необязательно)">
-      <span id="me" class="me"></span>
+  <!-- «За окном»: небо по текущей погоде и времени суток -->
+  <section id="window" class="window day clear">
+    <div class="sky" id="sky" aria-hidden="true"></div>
+    <div class="window-body">
+      <div class="clock">
+        <div id="time" class="time">--:--</div>
+        <div id="date" class="date"></div>
+      </div>
+      <div class="wx">
+        <div id="wx-icon" class="wx-icon">⛅</div>
+        <div>
+          <div id="wx-temp" class="wx-temp">--°</div>
+          <div id="wx-desc" class="wx-desc">загружаем погоду…</div>
+        </div>
+      </div>
     </div>
-    <div id="emojis" class="emojis" hidden></div>
-    <div class="row">
-      <button type="button" id="emoji-btn" class="icon" aria-label="Смайлики">😊</button>
-      <textarea id="text" rows="1" maxlength="1000" placeholder="Введите текст…" required></textarea>
-      <button type="submit" id="send">Отправить</button>
-    </div>
-    <div id="err" class="err" role="alert"></div>
-  </form>
+    <div id="wx-extra" class="wx-extra"></div>
+  </section>
 
+  <section class="cards" id="cards">
+    <article class="card" id="card-eskhata" hidden>
+      <h3>🏦 Курс в Эсхата <span id="esh-date" class="muted"></span></h3>
+      <table id="esh-table"><thead><tr><th></th><th>Покупка</th><th>Продажа</th></tr></thead><tbody></tbody></table>
+      <div id="esh-transfer" class="muted small"></div>
+    </article>
+
+    <article class="card" id="card-cbr" hidden>
+      <h3>💱 Биржевой курс</h3>
+      <div class="kv" id="cbr"></div>
+    </article>
+
+    <article class="card" id="card-namaz" hidden>
+      <h3>🕌 Время намаза <span id="hijri" class="muted"></span></h3>
+      <div class="namaz" id="namaz"></div>
+      <div id="namaz-next" class="next"></div>
+    </article>
+
+    <article class="card" id="card-air" hidden>
+      <h3>💨 Воздух</h3>
+      <div class="big" id="air"></div>
+      <div class="muted small" id="air-desc"></div>
+    </article>
+
+    <article class="card" id="card-mag" hidden>
+      <h3>🧲 Магнитная буря</h3>
+      <div class="big" id="mag"></div>
+      <div class="muted small" id="mag-desc"></div>
+    </article>
+
+    <article class="card" id="card-sun" hidden>
+      <h3>🌅 Солнце</h3>
+      <div class="kv" id="sun"></div>
+    </article>
+
+    <article class="card sos">
+      <h3>☎️ Экстренные службы</h3>
+      <div class="kv">
+        <span>Пожарная</span><b>101</b>
+        <span>Милиция</span><b>102</b>
+        <span>Скорая</span><b>103</b>
+        <span>Газовая</span><b>104</b>
+        <span>Единый номер</span><b>112</b>
+      </div>
+    </article>
+  </section>
+
+  <section class="chat">
+    <h2>💬 Напишите нам</h2>
+    <main id="log" aria-live="polite">
+      <div class="hint">Напишите сообщение — администратор ответит здесь.</div>
+    </main>
+
+    <form id="form" autocomplete="off">
+      <div class="row">
+        <input id="name" maxlength="32" placeholder="Ваше имя (необязательно)">
+        <span id="me" class="me"></span>
+      </div>
+      <div id="emojis" class="emojis" hidden></div>
+      <div class="row">
+        <button type="button" id="emoji-btn" class="icon" aria-label="Смайлики">😊</button>
+        <textarea id="text" rows="1" maxlength="1000" placeholder="Введите текст…" required></textarea>
+        <button type="submit" id="send">Отправить</button>
+      </div>
+      <div id="err" class="err" role="alert"></div>
+    </form>
+  </section>
+
+  <script src="/static/info.js"></script>
   <script src="/static/chat.js"></script>
 </body>
 </html>

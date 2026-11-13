@@ -16,6 +16,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
+
+import info
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -238,6 +240,11 @@ async def index(request: Request):
     return resp if sid else with_cookie(resp, secrets.token_urlsafe(32))
 
 
+@app.get("/api/info")
+async def get_info():
+    return await info.collect(http)
+
+
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
@@ -245,7 +252,7 @@ async def healthz():
 
 @app.get("/static/{name}")
 async def static(name: str):
-    if name not in {"chat.js", "chat.css"}:
+    if name not in {"chat.js", "chat.css", "info.js"}:
         raise HTTPException(404)
     return FileResponse(BASE / "static" / name)
 

@@ -16,3 +16,4 @@ publish_github.sh
 chat/.env
 *.db
 *.db-*
+.keepalive_state*
