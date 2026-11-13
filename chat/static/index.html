@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Free Wi-Fi · Турсунзаде</title>
+  <title>⭐ Ассалому алейкум! · Free Wi-Fi</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='31' fill='%23c94f2c'/><polygon fill='%23f5d76e' points='32,9 38.5,24.5 55,25.5 42.5,36 46.5,52.5 32,43.5 17.5,52.5 21.5,36 9,25.5 25.5,24.5'/></svg>">
+  <meta name="theme-color" content="#c94f2c">
   <link rel="stylesheet" href="/static/chat.css">
 </head>
 <body>
@@ -44,6 +46,23 @@
       <h3>🕌 Время намаза <span id="hijri" class="muted"></span></h3>
       <div class="namaz" id="namaz"></div>
       <div id="namaz-next" class="next"></div>
+    </article>
+
+    <article class="card wide gallery" id="card-photos" hidden>
+      <h3>📸 Фото дня <span id="photo-date" class="muted"></span></h3>
+      <div class="slides" id="slides"></div>
+      <div class="slide-nav">
+        <button type="button" class="nav-btn" id="prev" aria-label="Назад">‹</button>
+        <div class="dots" id="dots"></div>
+        <button type="button" class="nav-btn" id="next" aria-label="Вперёд">›</button>
+      </div>
+      <div class="caption" id="caption"></div>
+      <div class="muted small" id="credit"></div>
+    </article>
+
+    <article class="card wide" id="card-otd" hidden>
+      <h3>📅 В этот день</h3>
+      <ul class="otd" id="otd"></ul>
     </article>
 
     <article class="card" id="card-sun" hidden>
@@ -111,6 +130,8 @@
       <div id="err" class="err" role="alert"></div>
     </form>
   </section>
+
+  <footer class="refresh" id="refresh"></footer>
 
   <script src="/static/info.js"></script>
   <script src="/static/chat.js"></script>

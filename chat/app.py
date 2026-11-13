@@ -199,6 +199,7 @@ async def lifespan(app: FastAPI):
     global http
     http = httpx.AsyncClient()
     task = asyncio.create_task(poll_telegram())
+    asyncio.create_task(info.collect(http))  # прогрев кеша, чтобы первый гость не ждал
     yield
     task.cancel()
     await http.aclose()
@@ -218,7 +219,7 @@ async def security_headers(request: Request, call_next):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
-    resp.headers["Cache-Control"] = "no-store"
+    resp.headers.setdefault("Cache-Control", "no-store")
     return resp
 
 
@@ -284,6 +285,17 @@ async def get_info():
     data["news"] = news[0][0] if news else None
     data["online"] = ONLINE_BASE + online_count()
     return data
+
+
+IMG_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+@app.get("/media/{iid}")
+async def media(iid: str):
+    item = info.images.get(iid) if IMG_ID_RE.match(iid) else None
+    if not item:
+        raise HTTPException(404)
+    return Response(item[0], media_type=item[1], headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/healthz")

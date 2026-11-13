@@ -4,6 +4,7 @@
 Упавший источник просто пропускается, остальные отдаются.
 """
 import asyncio
+import hashlib
 import html
 import re
 import time
@@ -185,10 +186,87 @@ async def quran(c):
     }
 
 
+# ---------- фото дня и «в этот день» (Wikimedia featured feed) ----------
+WIKI_UA = {"User-Agent": "wifi-portal/1.0 (github.com/khurshedz/wifi-portal)"}
+IMG_HOSTS = ("https://upload.wikimedia.org/", "https://thumb.wikimedia.org/")
+POTD_DAYS = 7
+_feed_by_date: dict[str, dict] = {}     # прошлые дни не меняются — храним
+images: dict[str, tuple[bytes, str]] = {}  # id -> (байты, content-type), отдаёт /media/{id}
+
+
+def _strip_html(s: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
+
+
+async def _feed(c, d) -> dict:
+    key = d.strftime("%Y/%m/%d")
+    today = datetime.now(timezone(timedelta(hours=5))).date()
+    if key in _feed_by_date and d < today:
+        return _feed_by_date[key]
+    r = await c.get(f"https://api.wikimedia.org/feed/v1/wikipedia/ru/featured/{key}", headers=WIKI_UA, timeout=20)
+    r.raise_for_status()
+    _feed_by_date[key] = r.json()
+    for k in sorted(_feed_by_date)[:-POTD_DAYS - 2]:  # не копим старое
+        _feed_by_date.pop(k, None)
+    return _feed_by_date[key]
+
+
+async def _image(c, url: str) -> str | None:
+    """Скачивает картинку (только с Wikimedia) и возвращает id для /media/{id}."""
+    if not url.startswith(IMG_HOSTS):
+        return None
+    iid = hashlib.sha1(url.encode()).hexdigest()[:16]
+    if iid not in images:
+        r = await c.get(url, headers=WIKI_UA, timeout=30)
+        ctype = r.headers.get("content-type", "")
+        if r.status_code != 200 or not ctype.startswith("image/") or len(r.content) > 3_000_000:
+            return None
+        images[iid] = (r.content, ctype)
+    return iid
+
+
+async def wiki(c):
+    today = datetime.now(timezone(timedelta(hours=5))).date()
+    photos, keep = [], set()
+
+    async def one(d):
+        try:
+            im = (await _feed(c, d)).get("image") or {}
+            thumb = (im.get("thumbnail") or {}).get("source")
+            return d, im, (await _image(c, thumb) if thumb else None)
+        except Exception as e:
+            print("potd", d, e)
+            return d, {}, None
+
+    days = [today - timedelta(days=i) for i in range(POTD_DAYS)]
+    for d, im, iid in await asyncio.gather(*(one(d) for d in days)):
+        if not iid:
+            continue
+        keep.add(iid)
+        desc = _strip_html((im.get("description") or {}).get("text", ""))
+        photos.append({
+            "id": iid, "date": d.strftime("%d.%m"),
+            "title": desc[:200] or im.get("title", "").removeprefix("File:").rsplit(".", 1)[0],
+            "author": _strip_html((im.get("artist") or {}).get("text", ""))[:80],
+            "license": (im.get("license") or {}).get("type", ""),
+        })
+    for k in [k for k in images if k not in keep]:  # чистим память
+        images.pop(k, None)
+    otd = []
+    try:
+        for o in ((await _feed(c, today)).get("onthisday") or [])[:6]:
+            otd.append({"year": o.get("year"), "text": _strip_html(o.get("text", ""))[:220]})
+    except Exception as e:
+        print("onthisday", e)
+    if not photos and not otd:
+        raise RuntimeError("wikimedia: пусто")
+    return {"photos": photos, "onthisday": otd}
+
+
 SOURCES = {  # ключ: (функция, ttl секунд) — редко, чтобы не злоупотреблять бесплатными API
     "weather": (weather_any, 2 * 3600), "air": (air, 2 * 3600), "eskhata": (eskhata, 2 * 3600),
     "cbr": (cbr, 2 * 3600), "namaz": (namaz, 12 * 3600), "magnetic": (magnetic, 2 * 3600),
-    "quran": (quran, 12 * 3600),
+    "quran": (quran, 12 * 3600), "wiki": (wiki, 3600),
 }
 
 
@@ -214,4 +292,8 @@ async def collect(client: httpx.AsyncClient) -> dict:
         out["weather"] = w
     out["now"] = time.time()
     out["errors"] = dict(errors)
+    stamps = [(_cache[k][0], SOURCES[k][1]) for k in SOURCES if k in _cache]
+    if stamps:
+        out["updated"] = max(ts for ts, _ in stamps)            # последнее обновление чего-либо
+        out["next_update"] = min(ts + ttl for ts, ttl in stamps)  # ближайшее следующее
     return out

@@ -243,6 +243,53 @@
     }));
   };
 
+  let photos = [], shownPhotos = "";
+  const showCaption = (i) => {
+    const p = photos[i];
+    if (!p) return;
+    $("photo-date").textContent = p.date;
+    $("caption").textContent = p.title;
+    $("credit").textContent = [p.author, p.license].filter(Boolean).join(" · ") + " · Wikimedia Commons";
+    [...$("dots").children].forEach((d, k) => d.classList.toggle("on", k === i));
+  };
+  const current = () => Math.round($("slides").scrollLeft / Math.max(1, $("slides").clientWidth));
+  const go = (i) => {
+    const s = $("slides"), n = photos.length;
+    s.scrollTo({ left: ((i + n) % n) * s.clientWidth });
+  };
+  const renderWiki = (w) => {
+    if (!w) return;
+    if (w.photos && w.photos.length) {
+      const sig = w.photos.map((p) => p.id).join();
+      if (sig !== shownPhotos) {            // не перерисовывать, если фото те же
+        shownPhotos = sig;
+        photos = w.photos;
+        $("card-photos").hidden = false;
+        $("slides").replaceChildren(...photos.map((p, i) => {
+          const s = el("div", "slide");
+          const img = el("img");
+          img.src = "/media/" + p.id; img.alt = p.title; img.loading = i ? "lazy" : "eager";
+          s.appendChild(img);
+          return s;
+        }));
+        $("dots").replaceChildren(...photos.map(() => el("span")));
+        showCaption(0);
+      }
+    }
+    if (w.onthisday && w.onthisday.length) {
+      $("card-otd").hidden = false;
+      $("otd").replaceChildren(...w.onthisday.map((o) => {
+        const li = el("li");
+        li.append(el("b", null, o.year), document.createTextNode(o.text));
+        return li;
+      }));
+    }
+  };
+  let scrollT;
+  $("slides").addEventListener("scroll", () => { clearTimeout(scrollT); scrollT = setTimeout(() => showCaption(current()), 80); });
+  $("prev").addEventListener("click", () => go(current() - 1));
+  $("next").addEventListener("click", () => go(current() + 1));
+
   const renderNews = (text) => {
     const box = $("news");
     if (!text) { box.hidden = true; return; }
@@ -255,12 +302,25 @@
     $("online").textContent = "на сайте: " + n + " " + w;
   };
 
+  let updatedAt = 0, nextAt = 0, reloading = false;
+  const renderRefresh = () => {
+    if (!updatedAt) return;
+    const n = now().getTime();
+    let left = Math.max(0, Math.round((nextAt - n) / 1000));
+    const mm = String(Math.floor(left / 60)).padStart(2, "0"), ss = String(left % 60).padStart(2, "0");
+    $("refresh").textContent = "🔄 Данные обновлены в " + hm(new Date(updatedAt)) +
+      " · следующее обновление через " + (left >= 3600 ? Math.floor(left / 3600) + " ч " : "") +
+      (left >= 3600 ? String(Math.floor((left % 3600) / 60)).padStart(2, "0") + " мин" : mm + ":" + ss);
+    if (left === 0 && !reloading) { reloading = true; setTimeout(() => { load().finally(() => { reloading = false; }); }, 3000); }
+  };
+
   const load = async () => {
     try {
       const r = await fetch("/api/info", { credentials: "same-origin" });
       if (!r.ok) throw new Error(r.status);
       const d = await r.json();
       offset = d.now * 1000 - Date.now();
+      if (d.updated) { updatedAt = d.updated * 1000; nextAt = d.next_update * 1000; }
       tick();
       renderWeather(d.weather);
       renderEskhata(d.eskhata);
@@ -270,6 +330,7 @@
       renderMag(d.magnetic);
       renderNews(d.news);
       renderQuran(d.quran);
+      renderWiki(d.wiki);
       renderOnline(d.online);
       renderProverb();
     } catch (e) {
@@ -278,7 +339,7 @@
   };
 
   tick();
-  setInterval(tick, 1000);
+  setInterval(() => { tick(); renderRefresh(); }, 1000);
   load();
   renderProverb();
   setInterval(load, 60 * 1000);   // данные всё равно из кеша сервера; часто — ради объявлений и счётчика
