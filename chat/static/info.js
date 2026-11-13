@@ -1,5 +1,6 @@
 (() => {
   const $ = (id) => document.getElementById(id);
+  const BASE = document.documentElement.dataset.api || "";  // на роутере: /cgi-bin/portal
   const TZ = "Asia/Dushanbe";
   let offset = 0;          // серверное время - время телефона, мс
   let namazTimes = [];
@@ -256,7 +257,7 @@
     const p = photos[i];
     if (!p) return;
     $("photo-date").textContent = p.date;
-    $("save").href = "/media/" + p.id + "?dl=1";
+    $("save").href = BASE + "/media/" + p.id + "?dl=1";
     $("caption").textContent = p.title;
     $("caption-tg").textContent = p.title_tg ? "🇹🇯 " + p.title_tg : "";
     $("credit").textContent = (p.author ? "Автор: " + p.author : "") + (p.license ? " · " + p.license : "") + " · Wikimedia Commons";
@@ -338,7 +339,7 @@
         $("slides").replaceChildren(...photos.map((p, i) => {
           const s = el("div", "slide");
           const img = el("img");
-          img.src = "/media/" + p.id; img.alt = p.title; img.loading = i ? "lazy" : "eager";
+          img.src = BASE + "/media/" + p.id; img.alt = p.title; img.loading = i ? "lazy" : "eager";
           s.appendChild(img);
           return s;
         }));
@@ -398,11 +399,18 @@
 
   const load = async () => {
     try {
-      const r = await fetch("/api/info", { credentials: "same-origin" });
+      const r = await fetch(BASE + "/api/info", { credentials: "same-origin" });
       if (!r.ok) throw new Error(r.status);
       const d = await r.json();
-      offset = d.now * 1000 - Date.now();
-      if (d.updated) { updatedAt = d.updated * 1000; nextAt = d.next_update * 1000; }
+      // без интернета часы роутера могут врать — тогда верим часам телефона
+      offset = d.offline ? 0 : d.now * 1000 - Date.now();
+      $("offline").hidden = !d.offline;
+      if (d.offline) {
+        $("offline-text").textContent = "Нет интернета — показываем данные на " +
+          (d.synced ? new Date(d.synced * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "последнее обновление") +
+          ". Сообщения в чат отправим, когда связь вернётся.";
+        updatedAt = 0; $("refresh").textContent = "";
+      } else if (d.updated) { updatedAt = d.updated * 1000; nextAt = d.next_update * 1000; }
       tick();
       renderWeather(d.weather);
       renderEskhata(d.eskhata);

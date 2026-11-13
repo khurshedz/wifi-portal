@@ -14,6 +14,7 @@
     <div class="sub">Бесплатный Wi-Fi · Турсунзаде</div>
   </header>
 
+  <div id="offline" class="news offline" hidden><span class="news-ico">📴</span><span id="offline-text"></span></div>
   <div id="news" class="news" hidden><span class="news-ico">📢</span><span id="news-text"></span></div>
 
   <!-- «За окном»: небо по текущей погоде и времени суток -->
@@ -119,6 +120,13 @@
 
   <section class="chat">
     <h2>💬 Напишите нам <span id="online" class="online"></span></h2>
+    <div class="chips tabs" id="tabs" hidden>
+      <button type="button" data-t="admin" class="on">💬 Админу</button>
+      <button type="button" data-t="room">👥 Общий чат</button>
+    </div>
+    <main id="room-log" class="room" aria-live="polite" hidden>
+      <div class="hint">Общий чат всех, кто подключён к Wi-Fi. Работает даже без интернета.</div>
+    </main>
     <main id="log" aria-live="polite">
       <div class="hint">Напишите сообщение — администратор ответит здесь.</div>
     </main>

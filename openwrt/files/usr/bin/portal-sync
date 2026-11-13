@@ -1,0 +1,79 @@
+#!/bin/sh
+# Синхронизация портала с Render для офлайн-режима (OpenWrt / busybox).
+#   portal-sync        — полная: info.json, страница, скрипты, фото (cron раз в час, HH:01)
+#   portal-sync quick  — пинг /healthz (Render не засыпает) + отправка очереди чата (cron каждые 5 мин)
+SRC="${PORTAL_SRC:-https://wifi-portal-70yp.onrender.com}"
+DIR="${PORTAL_DIR:-/tmp/portal}"          # то, что отдаёт uhttpd (в RAM)
+STATE="${PORTAL_STATE:-/tmp/portal-state}" # online, synced, queue/
+SNAP="${PORTAL_SNAP:-/root/portal-snapshot.tgz}"  # копия на флеше — на случай перезагрузки без интернета
+SHARE="${PORTAL_SHARE:-/usr/share/portal}"
+UA="wifi-portal-router/1.0"
+mkdir -p "$STATE/queue"
+
+fetch() { curl -fsS -m 60 -A "$UA" "$@"; }
+
+flush_queue() {
+    for f in "$STATE"/queue/*; do
+        [ -f "$f" ] || continue
+        sid=$(head -n 1 "$f")
+        tail -n +2 "$f" > "$f.body"
+        if curl -sS -m 30 -A "$UA" -o /dev/null -w '%{http_code}' -X POST \
+             -H 'Content-Type: application/json' -H 'X-Requested-With: chat' \
+             -b "sid=$sid" --data-binary @"$f.body" "$SRC/api/send" | grep -q '^[24]'; then
+            rm -f "$f"   # 2xx — доставлено; 4xx — сервер отверг, повторять бессмысленно
+        fi
+        rm -f "$f.body"
+    done
+}
+
+check_online() {
+    if fetch -o /dev/null "$SRC/healthz"; then
+        touch "$STATE/online"; return 0
+    fi
+    rm -f "$STATE/online"; return 1
+}
+
+restore_snapshot() {
+    [ -f "$DIR/index.html" ] && return
+    [ -f "$SNAP" ] && mkdir -p "$DIR" && tar -xzf "$SNAP" -C "$DIR" && echo "restored snapshot"
+    install_cgi "$DIR"
+}
+
+install_cgi() {
+    mkdir -p "$1/cgi-bin"
+    cp "$SHARE/portal.cgi" "$1/cgi-bin/portal" && chmod 755 "$1/cgi-bin/portal"
+}
+
+full_sync() {
+    NEW="$DIR.new"; rm -rf "$NEW"; mkdir -p "$NEW/static" "$NEW/media"
+    fetch -o "$NEW/info.json" "$SRC/api/info" || return 1
+    fetch "$SRC/" | sed 's|<html lang="ru">|<html lang="ru" data-api="/cgi-bin/portal">|' > "$NEW/index.html" || return 1
+    grep -q 'data-api=' "$NEW/index.html" || return 1
+    for f in chat.css info.js chat.js; do fetch -o "$NEW/static/$f" "$SRC/static/$f" || return 1; done
+    for id in $(grep -o '"id":"[0-9a-f]\{16\}"' "$NEW/info.json" | cut -d'"' -f4 | sort -u); do
+        if [ -f "$DIR/media/$id" ]; then             # уже скачано — не качаем снова
+            cp "$DIR/media/$id" "$DIR/media/$id.type" "$NEW/media/" 2>/dev/null
+        else
+            ct=$(curl -fsS -m 60 -A "$UA" -o "$NEW/media/$id" -w '%{content_type}' "$SRC/media/$id") \
+                && echo "$ct" > "$NEW/media/$id.type" || rm -f "$NEW/media/$id"
+        fi
+    done
+    install_cgi "$NEW"
+    date +%s > "$STATE/synced"
+    rm -rf "$DIR.old"; [ -d "$DIR" ] && mv "$DIR" "$DIR.old"; mv "$NEW" "$DIR"; rm -rf "$DIR.old"
+    # раз в сутки — копия на флеш (без cgi-bin), чтобы пережить перезагрузку без интернета
+    if [ ! -f "$SNAP" ] || [ -n "$(find "$SNAP" -mmin +1440 2>/dev/null)" ]; then
+        tar -czf "$SNAP.tmp" -C "$DIR" index.html info.json static media && mv "$SNAP.tmp" "$SNAP"
+    fi
+    return 0
+}
+
+restore_snapshot
+if check_online; then
+    flush_queue
+    if [ "$1" != "quick" ] || [ ! -f "$DIR/info.json" ]; then
+        full_sync && echo "sync ok" || { echo "sync failed"; rm -rf "$DIR.new"; }
+    fi
+else
+    echo "offline"
+fi
