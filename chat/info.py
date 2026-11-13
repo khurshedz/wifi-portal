@@ -255,6 +255,7 @@ async def _image(c, url: str) -> str | None:
     return iid
 
 
+TRANSLATE_EMAIL = os.environ.get("TRANSLATE_EMAIL", "")  # MyMemory: лимит по email, а не по общему IP Render
 _tg: dict[str, str] = {}  # id фото -> подпись на таджикском
 
 
@@ -264,7 +265,8 @@ async def to_tajik(c, iid: str, text: str) -> str:
         return _tg.get(iid, text)
     try:
         r = await c.get("https://api.mymemory.translated.net/get",
-                        params={"q": text[:480], "langpair": "en|tg"}, timeout=15)
+                        params={"q": text[:480], "langpair": "en|tg",
+                                **({"de": TRANSLATE_EMAIL} if TRANSLATE_EMAIL else {})}, timeout=15)
         d = r.json()
         tr = (d.get("responseData") or {}).get("translatedText") or ""
         if d.get("responseStatus") == 200 and tr and "MYMEMORY WARNING" not in tr:
