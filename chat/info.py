@@ -269,9 +269,12 @@ async def to_tajik(c, iid: str, text: str) -> str:
         tr = (d.get("responseData") or {}).get("translatedText") or ""
         if d.get("responseStatus") == 200 and tr and "MYMEMORY WARNING" not in tr:
             _tg[iid] = html.unescape(tr)
+            errors.pop("translate", None)
             return _tg[iid]
+        errors["translate"] = f"HTTP {r.status_code}: {str(d.get('responseDetails') or tr)[:80]}"
     except Exception as e:
         print("translate", e)
+        errors["translate"] = f"{type(e).__name__}: {str(e)[:80]}"
     return text
 
 
