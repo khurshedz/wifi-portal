@@ -257,7 +257,7 @@
     if (!p) return;
     $("photo-date").textContent = p.date;
     $("caption").textContent = p.title;
-    $("credit").textContent = (p.author ? "Муаллиф: " + p.author : "") + (p.license ? " · " + p.license : "") + " · Wikimedia Commons";
+    $("credit").textContent = (p.author ? "Автор: " + p.author : "") + (p.license ? " · " + p.license : "") + " · Wikimedia Commons";
     [...$("dots").children].forEach((d, k) => d.classList.toggle("on", k === i));
   };
   let idx = 0, autoT = null, pausedUntil = 0;
