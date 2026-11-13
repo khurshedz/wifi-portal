@@ -194,14 +194,26 @@ async def poll_telegram():
             await asyncio.sleep(5)
 
 
+async def refresh_hourly():
+    """Ровно в HH:00 (+5 c) обновляет инфо-блок, не дожидаясь гостей."""
+    while True:
+        await asyncio.sleep(3600 - time.time() % 3600 + 5)
+        try:
+            await info.collect(http)
+        except Exception as e:
+            print("hourly refresh error:", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http
     http = httpx.AsyncClient()
     task = asyncio.create_task(poll_telegram())
     asyncio.create_task(info.collect(http))  # прогрев кеша, чтобы первый гость не ждал
+    hourly = asyncio.create_task(refresh_hourly())
     yield
     task.cancel()
+    hourly.cancel()
     await http.aclose()
 
 

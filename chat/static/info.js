@@ -319,7 +319,7 @@
     $("refresh").textContent = "🔄 Данные обновлены в " + hm(new Date(updatedAt)) +
       " · следующее обновление через " + (left >= 3600 ? Math.floor(left / 3600) + " ч " : "") +
       (left >= 3600 ? String(Math.floor((left % 3600) / 60)).padStart(2, "0") + " мин" : mm + ":" + ss);
-    if (left === 0 && !reloading) { reloading = true; setTimeout(() => { load().finally(() => { reloading = false; }); }, 3000); }
+    if (left === 0 && !reloading) { reloading = true; setTimeout(() => { load().finally(() => { reloading = false; }); }, 15000); }
   };
 
   const load = async () => {

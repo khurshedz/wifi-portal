@@ -22,13 +22,22 @@ _locks: dict[str, asyncio.Lock] = {}
 errors: dict[str, str] = {}  # последняя ошибка источника — для диагностики
 
 
+def expires(ts: float, ttl: int) -> float:
+    """Срок годности — ровно на границе часа (HH:00), не раньше ts + ttl - 1 ч."""
+    return (int(ts + ttl - 3600) // 3600 + 1) * 3600
+
+
+def fresh(hit, ttl: int) -> bool:
+    return bool(hit) and time.time() < expires(hit[0], ttl)
+
+
 async def cached(key: str, ttl: int, fetch, client: httpx.AsyncClient):
     hit = _cache.get(key)
-    if hit and time.time() - hit[0] < ttl:
+    if fresh(hit, ttl):
         return hit[1]
     async with _locks.setdefault(key, asyncio.Lock()):
         hit = _cache.get(key)
-        if hit and time.time() - hit[0] < ttl:
+        if fresh(hit, ttl):
             return hit[1]
         try:
             val = await fetch(client)
@@ -36,8 +45,8 @@ async def cached(key: str, ttl: int, fetch, client: httpx.AsyncClient):
             print(f"info {key} error:", e)
             errors[key] = f"{type(e).__name__}: {str(e)[:80]}"
             # отдаём устаревшее, если есть; повторим попытку через минуту
-            if hit:
-                _cache[key] = (time.time() - ttl + 60, hit[1])
+            if hit:  # повторить через минуту: сдвигаем метку так, чтобы истекло скоро
+                _cache[key] = (time.time() - ttl + 3600 - (time.time() % 3600) + 60, hit[1])
                 return hit[1]
             return None
         _cache[key] = (time.time(), val)
@@ -315,5 +324,5 @@ async def collect(client: httpx.AsyncClient) -> dict:
     stamps = [(_cache[k][0], SOURCES[k][1]) for k in SOURCES if k in _cache]
     if stamps:
         out["updated"] = max(ts for ts, _ in stamps)            # последнее обновление чего-либо
-        out["next_update"] = min(ts + ttl for ts, ttl in stamps)  # ближайшее следующее
+        out["next_update"] = min(expires(ts, ttl) for ts, ttl in stamps)  # ближайшее, всегда HH:00
     return out
