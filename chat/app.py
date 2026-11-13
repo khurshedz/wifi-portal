@@ -4,6 +4,8 @@
 в Telegram-группе-форуме. Ответ в теме уходит обратно этому гостю.
 """
 import asyncio
+import hashlib
+import hmac
 import os
 import re
 import secrets
@@ -15,7 +17,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 BASE = Path(__file__).resolve().parent
@@ -34,6 +36,9 @@ load_env(BASE / ".env")
 TG_TOKEN = os.environ["TG_BOT_TOKEN"]
 TG_CHAT_ID = int(os.environ["TG_CHAT_ID"])
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"
+# для привязки к устройству: точный uamserver из Keenetic и его uamsecret
+PORTAL_URL = os.environ.get("PORTAL_URL", "")
+UAM_SECRET = os.environ.get("UAM_SECRET", "")
 DB_PATH = os.environ.get("DB_PATH", str(BASE / "chat.db"))
 TG_API = f"https://api.telegram.org/bot{TG_TOKEN}"
 
@@ -41,6 +46,7 @@ MAX_TEXT = 1000
 MAX_NAME = 32
 COOKIE = "sid"
 SID_RE = re.compile(r"^[A-Za-z0-9_-]{40,64}$")
+MAC_RE = re.compile(r"^[0-9A-F]{2}(-[0-9A-F]{2}){5}$")
 CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f​-‏‪-‮⁦-⁩]")
 
 # ---------- база ----------
@@ -52,6 +58,7 @@ CREATE TABLE IF NOT EXISTS guests(
 CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY AUTOINCREMENT, num INTEGER, out INTEGER, text TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS devices(mac TEXT PRIMARY KEY, sid TEXT, seen REAL);
 """)
 db_lock = asyncio.Lock()
 
@@ -191,13 +198,49 @@ def require_sid(request: Request) -> str:
     return sid
 
 
+def signed_mac(request: Request) -> str | None:
+    """MAC устройства из редиректа Keenetic/Chilli, если подпись md верна."""
+    if not (PORTAL_URL and UAM_SECRET):
+        return None
+    raw = request.scope.get("query_string", b"").decode("latin-1")
+    base, sep, md = raw.rpartition("&md=")
+    if not sep or len(md) != 32:
+        return None
+    want = hashlib.md5((PORTAL_URL + "?" + base + UAM_SECRET).encode("latin-1")).hexdigest().upper()
+    if not hmac.compare_digest(want, md.upper()):
+        return None
+    mac = (request.query_params.get("mac") or "").upper()
+    return mac if MAC_RE.match(mac) else None
+
+
+def with_cookie(resp: Response, sid: str) -> Response:
+    resp.set_cookie(COOKIE, sid, max_age=30 * 86400, httponly=True,
+                    samesite="lax", secure=COOKIE_SECURE)
+    return resp
+
+
 @app.get("/")
 async def index(request: Request):
+    sid = get_sid(request)
+    mac = signed_mac(request)
+    if mac:
+        # одно устройство = один гость, даже в другом окне/браузере
+        row = q("SELECT sid FROM devices WHERE mac=?", (mac,))
+        if row:
+            sid = row[0][0]
+        else:
+            sid = sid or secrets.token_urlsafe(32)
+            q("INSERT INTO devices(mac,sid,seen) VALUES(?,?,?)", (mac, sid, time.time()))
+        q("UPDATE devices SET seen=? WHERE mac=?", (time.time(), mac))
+        # убираем подписанные параметры из адресной строки
+        return with_cookie(RedirectResponse("/", status_code=303), sid)
     resp = FileResponse(BASE / "static" / "index.html")
-    if not get_sid(request):
-        resp.set_cookie(COOKIE, secrets.token_urlsafe(32), max_age=30 * 86400,
-                        httponly=True, samesite="strict", secure=COOKIE_SECURE)
-    return resp
+    return resp if sid else with_cookie(resp, secrets.token_urlsafe(32))
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
 
 
 @app.get("/static/{name}")
