@@ -257,6 +257,7 @@
     if (!p) return;
     $("photo-date").textContent = p.date;
     $("caption").textContent = p.title;
+    $("caption-tg").textContent = p.title_tg ? "🇹🇯 " + p.title_tg : "";
     $("credit").textContent = (p.author ? "Автор: " + p.author : "") + (p.license ? " · " + p.license : "") + " · Wikimedia Commons";
     [...$("dots").children].forEach((d, k) => d.classList.toggle("on", k === i));
   };

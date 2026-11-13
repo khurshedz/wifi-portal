@@ -355,10 +355,12 @@ async def wiki(c):
         if not iid:
             continue
         keep.add(iid)
-        desc = await to_tajik(c, iid, _strip_html((im.get("description") or {}).get("text", ""))[:200])
+        desc = _strip_html((im.get("description") or {}).get("text", ""))[:200]
+        desc_tg = await to_tajik(c, iid, desc)
         photos.append({
             "id": iid, "date": d.strftime("%d.%m"),
             "title": desc[:200] or im.get("title", "").removeprefix("File:").rsplit(".", 1)[0],
+            "title_tg": desc_tg if desc_tg != desc else "",
             "author": _strip_html((im.get("artist") or {}).get("text", ""))[:80],
             "license": (im.get("license") or {}).get("type", ""),
         })
