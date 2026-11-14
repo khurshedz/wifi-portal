@@ -1,10 +1,10 @@
 #!/bin/sh
-# Настройка OpenWrt (Xiaomi Mi Router 3A) под портал «Free Wifi».
+# Настройка OpenWrt (Xiaomi Mi Router 3A) под портал «Assalom Wi-Fi».
 # Запускать НА РОУТЕРЕ после прошивки OpenWrt и копирования папки files/ (см. README.md).
 # Схема: WAN — интернет (кабель от Кинетика/ONT); LAN-порты — админ (192.168.1.1);
-#        Wi-Fi «Free Wifi» — гости (192.168.2.1), интернета у гостей нет, только наша страница.
+#        Wi-Fi «Assalom Wi-Fi» — гости (192.168.2.1), интернета у гостей нет, только наша страница.
 set -e
-SSID="${SSID:-Free Wifi}"
+SSID="${SSID:-Assalom Wi-Fi}"
 
 opkg update
 opkg install curl ca-bundle
