@@ -25,3 +25,5 @@ td.empty { color:var(--muted); text-align:center; padding:16px; }
 .ok { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--rust); }
 .err { color:var(--rust); margin-top:8px; }
 .note { color:var(--muted); font-size:12px; margin:16px 0 8px; max-width:70ch; }
+.login { margin:24px 0 8px; }
+.login button { font:600 16px system-ui,sans-serif; padding:12px 22px; border:0; border-radius:10px; background:var(--rust); color:#fff; cursor:pointer; }

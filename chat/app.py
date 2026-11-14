@@ -294,7 +294,7 @@ async def reply(m: dict, text: str) -> None:
     thread = {"message_thread_id": m["message_thread_id"]} if m.get("is_topic_message") else {}
     for i in range(0, len(text), 3800):
         try:
-            await tg("sendMessage", chat_id=TG_CHAT_ID, text=text[i:i + 3800], **thread)
+            await tg("sendMessage", chat_id=TG_CHAT_ID, text=text[i:i + 3800], link_preview_options={"is_disabled": True}, **thread)
         except Exception as e:
             print("reply error:", e)
 
@@ -1125,20 +1125,41 @@ def admin_valid(tok: str | None) -> bool:
     return int(exp) > time.time() and hmac.compare_digest(sig, good)
 
 
+ADMIN_LOGIN_HTML = """<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
+<title>Вход в панель</title><link rel="stylesheet" href="/static/admin.css"></head>
+<body><h1>Assalom Wi-Fi <span class="muted">· панель</span></h1>
+<form method="post" action="/admin" class="login"><input type="hidden" name="t" value="{t}">
+<button type="submit">Войти в панель</button></form>
+<p class="note">Ссылка одноразовая: после входа этот браузер помнит вас 12 часов.</p></body></html>"""
+
+
+@app.post("/admin")
+async def admin_login(request: Request):
+    # вход только по нажатию кнопки: превью ссылок в Telegram и сканеры делают GET и ссылку не сжигают
+    from urllib.parse import parse_qs
+    t = (parse_qs((await request.body()).decode("ascii", "ignore")).get("t") or [""])[0]
+    if not auth_sid.ok("adm:" + client_ip(request)) or not admin_valid(t) or t in adm_used:
+        return Response("Ссылка недействительна или уже использована — возьмите новую: /dash в Telegram",
+                        status_code=403, media_type="text/plain; charset=utf-8")
+    now = time.time()
+    for k in [k for k, v in adm_used.items() if v < now]:
+        adm_used.pop(k, None)
+    adm_used[t] = now + 600
+    resp = RedirectResponse("/admin", status_code=303)
+    resp.set_cookie(ADM_COOKIE, admin_token(ADM_TTL), max_age=ADM_TTL, httponly=True, secure=True,
+                    samesite="lax", path="/")  # lax: панель открывается и по ссылке из Telegram; API защищён заголовком
+    return resp
+
+
 @app.get("/admin")
 async def admin_page(request: Request, t: str = ""):
-    if t:
-        if not auth_sid.ok("adm:" + client_ip(request)) or not admin_valid(t) or t in adm_used:
-            raise HTTPException(404)
-        now = time.time()
-        for k in [k for k, v in adm_used.items() if v < now]:
-            adm_used.pop(k, None)
-        adm_used[t] = now + 600
-        resp = RedirectResponse("/admin", status_code=303)
-        resp.set_cookie(ADM_COOKIE, admin_token(ADM_TTL), max_age=ADM_TTL, httponly=True, secure=True,
-                        samesite="strict", path="/")
-        return resp
+    if t and admin_valid(t) and t not in adm_used:
+        return Response(ADMIN_LOGIN_HTML.replace("{t}", t), media_type="text/html; charset=utf-8")
     if not admin_valid(request.cookies.get(ADM_COOKIE)):
+        if t:
+            return Response("Ссылка недействительна или уже использована — возьмите новую: /dash в Telegram",
+                            status_code=403, media_type="text/plain; charset=utf-8")
         raise HTTPException(404)
     return FileResponse(BASE / "static" / "admin.html")
 
