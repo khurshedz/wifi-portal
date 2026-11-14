@@ -1,0 +1,12 @@
+[Unit]
+Description=Assalom Wi-Fi RADIUS proxy (Keenetic Chilli -> portal)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -I %h/PycharmProjects/captive_portal/radius/radius_proxy.py
+Environment=ENV_FILE=%h/PycharmProjects/captive_portal/router_backup/render_env.txt
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

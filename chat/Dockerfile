@@ -3,7 +3,7 @@ RUN useradd -m -u 1000 user
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY --chown=user app.py info.py visits.py ./
+COPY --chown=user app.py info.py visits.py access.py ./
 COPY --chown=user static ./static
 USER user
 ENV DB_PATH=/tmp/chat.db COOKIE_SECURE=1 PYTHONUNBUFFERED=1

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import httpx
 
+import access
 import info
 import visits
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -70,6 +71,9 @@ CREATE TABLE IF NOT EXISTS room_names(sid TEXT PRIMARY KEY, display TEXT UNIQUE 
 CREATE TABLE IF NOT EXISTS bans(sid TEXT PRIMARY KEY, ts REAL);
 """)
 db.executescript(visits.SCHEMA)
+db.executescript(access.SCHEMA)
+# параметры Chilli из подписанного редиректа: куда отправить браузер для входа
+db.execute("CREATE TABLE IF NOT EXISTS chilli_ctx(mac TEXT PRIMARY KEY, uamip TEXT, uamport INTEGER, challenge TEXT, ts REAL)")
 db_lock = asyncio.Lock()
 
 
@@ -286,6 +290,99 @@ async def visits_cmd(m: dict, text: str) -> None:
             print("visits cmd error:", e)
 
 
+async def reply(m: dict, text: str) -> None:
+    thread = {"message_thread_id": m["message_thread_id"]} if m.get("is_topic_message") else {}
+    for i in range(0, len(text), 3800):
+        try:
+            await tg("sendMessage", chat_id=TG_CHAT_ID, text=text[i:i + 3800], **thread)
+        except Exception as e:
+            print("reply error:", e)
+
+
+def fmt_min(sec: int) -> str:
+    return f"{sec // 3600} ч {sec % 3600 // 60} мин" if sec >= 3600 else f"{sec // 60} мин"
+
+
+async def access_cmd(m: dict, text: str) -> None:
+    """Админ-команды доступа (только из группы админов)."""
+    parts = text.split()
+    cmd, args = parts[0].split("@")[0][1:], parts[1:]
+    out = ""
+    try:
+        async with db_lock:
+            def uid_of(login):
+                row = q("SELECT id FROM users WHERE login=?", (access.norm_login(login),))
+                if not row:
+                    raise access.AccessError("Нет такого пользователя")
+                return row[0][0]
+            if cmd == "adduser" and args:
+                pw = secrets.token_urlsafe(6)
+                uid = access.create_user(q, args[0], pw, "admin")
+                mins = int(args[1]) if len(args) > 1 and args[1].isdigit() else 0
+                q("UPDATE users SET balance=balance+? WHERE id=?", (mins * 60, uid))
+                out = f"✅ {args[0].lower()} · пароль: {pw} · баланс {mins} мин\nПароль покажите гостю и удалите это сообщение."
+            elif cmd == "addtime" and len(args) == 2 and args[1].lstrip("-").isdigit():
+                uid = uid_of(args[0])
+                q("UPDATE users SET balance=MAX(0, balance+?) WHERE id=?", (int(args[1]) * 60, uid))
+                access.log(q, uid, None, "admin_time", int(args[1]) * 60)
+                out = f"✅ баланс {args[0]}: {fmt_min(q('SELECT balance FROM users WHERE id=?', (uid,))[0][0])}"
+            elif cmd == "user" and args:
+                uid = uid_of(args[0])
+                login, bal, blk, created, by = q("SELECT login,balance,blocked,created,by FROM users WHERE id=?", (uid,))[0]
+                devs = [r[0] for r in q("SELECT mac FROM user_devices WHERE user_id=?", (uid,))]
+                s = access.active(q, uid)
+                last = q("SELECT ts,mac,event,secs FROM access_log WHERE user_id=? ORDER BY ts DESC LIMIT 8", (uid,))
+                out = (f"👤 {login}{' ⛔' if blk else ''} · создан {time.strftime('%d.%m %H:%M', time.gmtime(created + 18000))} ({by})\n"
+                       f"баланс {fmt_min(bal)} · устройства: {', '.join(devs) or '—'}\n"
+                       f"сейчас: {('онлайн ' + s[3] + ' на ' + s[0] + ', осталось ' + fmt_min(int(s[5] - time.time()))) if s else 'не в сети'}\n\n"
+                       + "\n".join(f"{time.strftime('%d.%m %H:%M', time.gmtime(t + 18000))} {e} {mac or ''} {fmt_min(sec) if sec else ''}"
+                                   for t, mac, e, sec in last))
+            elif cmd in ("kick", "block", "unblock") and args:
+                uid = uid_of(args[0])
+                if cmd != "unblock":
+                    access.stop(q, uid, cmd)  # Chilli отключит в конце уже выданного куска (≤ RADIUS_CHUNK)
+                if cmd == "block":
+                    q("UPDATE users SET blocked=1 WHERE id=?", (uid,)); q("DELETE FROM user_sids WHERE user_id=?", (uid,))
+                if cmd == "unblock":
+                    q("UPDATE users SET blocked=0 WHERE id=?", (uid,))
+                access.log(q, uid, None, "admin_" + cmd)
+                out = f"✅ {cmd} {args[0]}"
+            elif cmd == "resetdev" and args:
+                uid = uid_of(args[0])
+                q("DELETE FROM user_devices WHERE user_id=?", (uid,))
+                out = f"✅ устройства {args[0]} сброшены"
+            elif cmd == "codes" and len(args) >= 1 and args[0].isdigit():
+                n = int(args[1]) if len(args) > 1 and args[1].isdigit() else 1
+                cs = access.make_codes(q, int(args[0]), n)
+                out = f"🎟 Коды на {args[0]} мин ({n} шт.):\n" + "\n".join(cs)
+            elif cmd == "online":
+                rows = q("SELECT u.login, s.mode, s.mac, s.until FROM sessions s JOIN users u ON u.id=s.user_id ORDER BY s.until")
+                out = f"🌐 В сети: {len(rows)}\n" + "\n".join(
+                    f"{l} · {md} · {mac} · ещё {fmt_min(int(u - time.time()))}" for l, md, mac, u in rows)
+            else:
+                out = ("Команды доступа:\n/adduser логин [минуты] — создать (пароль придумает бот)\n"
+                       "/addtime логин минуты — добавить (или -минуты)\n/user логин — карточка и журнал\n"
+                       "/kick логин — отключить сейчас\n/block, /unblock логин\n/resetdev логин — сбросить привязку устройств\n"
+                       "/codes минуты [кол-во] — коды пополнения\n/online — кто в сети")
+    except access.AccessError as e:
+        out = "⚠️ " + str(e)
+    await reply(m, out)
+
+
+async def access_loop():
+    """Закрывает истёкшие сессии в базе (на роутере их закрывает Session-Timeout из RADIUS)."""
+    while True:
+        try:
+            async with db_lock:
+                for uid, _ in access.expired(q):
+                    access.stop(q, uid, "expired")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print("access loop error:", e)
+        await asyncio.sleep(15)
+
+
 def guest_num(sid: str) -> int:
     row = q("SELECT num FROM guests WHERE sid=?", (sid,))
     if row:
@@ -345,6 +442,9 @@ async def poll_telegram():
                     continue
                 if text and re.match(r"^/(visits|stats|who)(@\w+)?(\s|$)", text):
                     await visits_cmd(m, text)
+                    continue
+                if text and re.match(r"^/(adduser|addtime|user|kick|block|unblock|resetdev|codes|online)(@\w+)?(\s|$)", text):
+                    await access_cmd(m, text)
                     continue
                 if text and re.match(r"^/(del|ban|unban|clear)(@\w+)?(\s|$)", text):
                     await moderate(m, text)
@@ -412,9 +512,11 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(poll_telegram())
     asyncio.create_task(take_over_cache())  # кеш от предыдущей версии — без лишних запросов к сервисам
     hourly = asyncio.create_task(refresh_hourly())
+    acc = asyncio.create_task(access_loop())
     yield
     task.cancel()
     hourly.cancel()
+    acc.cancel()
     await http.aclose()
 
 
@@ -507,6 +609,37 @@ def signed_mac(request: Request) -> str | None:
     return mac if MAC_RE.match(mac) else None
 
 
+def save_chilli_ctx(request: Request, mac: str) -> None:
+    """Запомнить, где у этого устройства Chilli (uamip:uamport) и его challenge — только из подписанного запроса."""
+    p = request.query_params
+    try:
+        ip = ipaddress.ip_address(p.get("uamip", ""))
+        port = int(p.get("uamport", ""))
+    except ValueError:
+        return
+    ch = p.get("challenge", "")
+    if ip.is_private and 1 <= port <= 65535 and re.fullmatch(r"[0-9a-fA-F]{32}", ch):
+        q("INSERT OR REPLACE INTO chilli_ctx VALUES(?,?,?,?,?)", (mac, str(ip), port, ch.lower(), time.time()))
+
+
+def chilli_logon_url(mac: str, user: str, pw: str) -> str | None:
+    """Ссылка входа в Chilli. Пароль кодируется challenge + uamsecret (как hotspotlogin.cgi)."""
+    row = q("SELECT uamip, uamport, challenge FROM chilli_ctx WHERE mac=?", (mac,))
+    if not row:
+        return None
+    ip, port, ch = row[0]
+    newchal = hashlib.md5(bytes.fromhex(ch) + UAM_SECRET.encode()).digest() if UAM_SECRET else bytes.fromhex(ch)
+    raw = pw.encode()[:16].ljust(16, b"\0")
+    enc = bytes(a ^ b for a, b in zip(raw, newchal)).hex()
+    from urllib.parse import urlencode
+    return f"http://{ip}:{port}/logon?" + urlencode({"username": user, "password": enc, "userurl": PORTAL_URL or "/"})
+
+
+def chilli_logoff_url(mac: str) -> str | None:
+    row = q("SELECT uamip, uamport FROM chilli_ctx WHERE mac=?", (mac,))
+    return f"http://{row[0][0]}:{row[0][1]}/logoff" if row else None
+
+
 def with_cookie(resp: Response, sid: str) -> Response:
     resp.set_cookie(COOKIE, sid, max_age=30 * 86400, httponly=True,
                     samesite="lax", secure=COOKIE_SECURE)
@@ -526,6 +659,7 @@ async def index(request: Request):
             sid = sid or secrets.token_urlsafe(32)
             q("INSERT INTO devices(mac,sid,seen) VALUES(?,?,?)", (mac, sid, time.time()))
         q("UPDATE devices SET seen=? WHERE mac=?", (time.time(), mac))
+        save_chilli_ctx(request, mac)
         q("INSERT OR REPLACE INTO kv VALUES('wifi_ip',?)", (client_ip(request),))  # запомнить IP точки
         # убираем подписанные параметры из адресной строки
         return with_cookie(RedirectResponse("/", status_code=303), sid)
@@ -605,6 +739,9 @@ async def diag_ip(request: Request):
 DB_EXPORT = {  # таблица -> сколько последних строк передавать новой версии
     "guests": 100000, "devices": 100000, "bans": 100000, "room_names": 100000, "kv": 1000,
     "room": 1000, "messages": 5000, "visits": 20000,
+    # доступ в интернет: аккаунты и балансы обязаны пережить деплой
+    "users": 1000000, "user_sids": 1000000, "user_devices": 1000000, "sessions": 100000,
+    "free_use": 200000, "reg_marks": 200000, "codes": 1000000, "access_log": 50000, "chilli_ctx": 100000,
 }
 
 
@@ -660,7 +797,7 @@ async def healthz():
 
 @app.get("/static/{name}")
 async def static(name: str):
-    if name not in {"chat.js", "chat.css", "info.js", "game.js"}:
+    if name not in {"chat.js", "chat.css", "info.js", "game.js", "access.js"}:
         raise HTTPException(404)
     return FileResponse(BASE / "static" / name)
 
@@ -776,6 +913,161 @@ async def room_post(body: SendIn, request: Request):
     except Exception as e:
         print("room copy error:", e)
     return {"ok": True, "id": mid, "name": name}
+
+
+# ---------- доступ в интернет ----------
+DEVICE_FRESH = 12 * 3600  # MAC из подписанного редиректа роутера считается актуальным 12 часов
+
+
+def sid_mac(sid: str) -> str | None:
+    """MAC этого устройства — только из подписанного редиректа роутера, не со слов браузера."""
+    row = q("SELECT mac FROM devices WHERE sid=? AND seen>? ORDER BY seen DESC LIMIT 1", (sid, time.time() - DEVICE_FRESH))
+    return row[0][0] if row else None
+
+
+def norm_fp(fp: str | None) -> str | None:
+    fp = (fp or "").lower()
+    return fp if access.FP_RE.match(fp) else None
+
+
+auth_sid = Limiter(8, 900)     # попыток входа/регистрации с одной сессии за 15 мин
+auth_login = Limiter(5, 900)   # попыток на один логин за 15 мин (перебор пароля)
+auth_all = Limiter(300, 900)   # всего
+redeem_lim = Limiter(5, 900)   # ввод кодов
+act_lim = Limiter(20, 60)      # старт/стоп
+
+
+class AuthIn(BaseModel):
+    login: str = Field(max_length=40)
+    password: str = Field(max_length=128)
+    fp: str | None = Field(default=None, max_length=64)
+
+
+class StartIn(BaseModel):
+    mode: str = Field(max_length=8)
+    fp: str | None = Field(default=None, max_length=64)
+
+
+class CodeIn(BaseModel):
+    code: str = Field(max_length=20)
+
+
+class PwIn(BaseModel):
+    old: str = Field(max_length=128)
+    new: str = Field(max_length=128)
+
+
+def acc_err(e: access.AccessError):
+    return HTTPException(400, str(e))
+
+
+@app.get("/api/access")
+async def access_state(request: Request, fp: str = ""):
+    sid = require_sid(request)
+    async with db_lock:
+        return access.state(q, sid, sid_mac(sid), norm_fp(fp))
+
+
+@app.post("/api/access/{action}")
+async def access_action(action: str, request: Request):
+    sid = require_sid(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "bad json")
+    mac = sid_mac(sid)
+    nav = None  # куда отправить браузер: вход/выход в Chilli
+    try:
+        if action in ("login", "register"):
+            b = AuthIn(**body)
+            if not (auth_sid.ok(sid) and auth_login.ok(b.login.strip().lower()) and auth_all.ok("all")):
+                raise HTTPException(429, "Слишком много попыток. Подождите 15 минут")
+            async with db_lock:
+                if action == "login":
+                    access.login_user(q, sid, b.login, b.password)
+                else:
+                    access.register(q, sid, mac, norm_fp(b.fp), b.login, b.password)
+        elif action == "logout":
+            async with db_lock:
+                access.logout(q, sid)
+        else:
+            async with db_lock:
+                uid = access.user_of(q, sid)
+            if not uid:
+                raise HTTPException(401, "Войдите в аккаунт")
+            if action in ("start", "relogon"):
+                if not act_lim.ok(sid):
+                    raise HTTPException(429, "Слишком часто")
+                async with db_lock:
+                    if action == "start":
+                        b = StartIn(**body)
+                        access.start(q, uid, sid, mac, norm_fp(b.fp), b.mode)
+                    tok = access.relogon(q, uid, mac)
+                    nav = chilli_logon_url(mac, *tok)
+                    if not nav:
+                        if action == "start":
+                            access.stop(q, uid, "no_chilli")
+                        raise access.AccessError("Переподключитесь к «Assalom Wi-Fi» и откройте страницу заново")
+            elif action == "stop":
+                async with db_lock:
+                    s = access.active(q, uid)
+                    if s and s[0] != mac:
+                        raise access.AccessError("Остановить можно с того устройства, где включено")
+                    access.stop(q, uid, "user")
+                    nav = chilli_logoff_url(mac) if mac else None
+            elif action == "redeem":
+                b = CodeIn(**body)
+                if not redeem_lim.ok(sid):
+                    raise HTTPException(429, "Слишком много попыток. Подождите 15 минут")
+                async with db_lock:
+                    access.redeem(q, uid, b.code)
+            elif action == "password":
+                b = PwIn(**body)
+                if not auth_sid.ok(sid):
+                    raise HTTPException(429, "Слишком много попыток")
+                async with db_lock:
+                    access.change_pw(q, uid, b.old, b.new)
+            else:
+                raise HTTPException(404)
+    except access.AccessError as e:
+        raise acc_err(e)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "bad request")
+    async with db_lock:
+        st = access.state(q, sid, mac, norm_fp(body.get("fp") if isinstance(body, dict) else None))
+    if nav:
+        st["nav"] = nav
+    return st
+
+
+# ---------- RADIUS-посредник на ПК спрашивает решение здесь ----------
+RADIUS_CHUNK = int(os.environ.get("RADIUS_CHUNK", "3600"))  # максимум за один вход; kick/block срабатывают не позже
+SPEED = {"free": int(os.environ.get("FREE_KBPS", "2048")), "paid": int(os.environ.get("PAID_KBPS", "5120"))}
+
+
+def radius_key() -> str:
+    return hmac.new(UAM_SECRET.encode(), b"radius", hashlib.sha256).hexdigest()
+
+
+class RadiusIn(BaseModel):
+    user: str = Field(max_length=64)
+    password: str = Field(max_length=64)
+    mac: str = Field(max_length=17)
+
+
+@app.post("/api/radius")
+async def radius(body: RadiusIn, request: Request):
+    if not (UAM_SECRET and hmac.compare_digest(request.headers.get("x-radius-key", ""), radius_key())):
+        raise HTTPException(404)
+    mac = body.mac.upper().replace(":", "-")
+    if not MAC_RE.match(mac):
+        return {"accept": False}
+    async with db_lock:
+        r = access.radius_auth(q, body.user, body.password, mac, RADIUS_CHUNK)
+    if not r:
+        return {"accept": False}
+    secs, mode = r
+    return {"accept": True, "timeout": secs, "idle": 900, "kbps": SPEED.get(mode, SPEED["free"])}
 
 
 @app.exception_handler(404)
