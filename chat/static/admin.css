@@ -1,0 +1,27 @@
+:root { --ink:#0d0d0d; --paper:#f5f0e8; --card:#fff; --muted:#6f6656; --line:rgba(13,13,13,.12); --rust:#c94f2c; --good:#2e7d4f; --warn:#a86a00; }
+@media (prefers-color-scheme: dark) {
+  :root { --ink:#f1ece4; --paper:#171512; --card:#23201c; --muted:#a39a8a; --line:rgba(255,255,255,.12); --rust:#e0714f; --good:#5cbf86; --warn:#e0a640; }
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--paper); color:var(--ink); font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; padding:16px; max-width:1200px; margin:0 auto; }
+header { display:flex; flex-wrap:wrap; gap:8px; justify-content:space-between; align-items:baseline; margin-bottom:14px; }
+h1 { font:700 22px Georgia,serif; } h2 { font-size:16px; margin:22px 0 8px; }
+.muted { color:var(--muted); font-weight:400; }
+.upd { color:var(--muted); font-size:12px; } .upd label { margin-left:8px; cursor:pointer; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+.tile { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+.tile .v { font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; }
+.tile .k { color:var(--muted); font-size:12px; margin-top:2px; }
+.tw { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:12px; }
+table { border-collapse:collapse; width:100%; min-width:720px; }
+th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+th { color:var(--muted); font-weight:600; font-size:12px; }
+tbody tr:last-child td { border-bottom:0; }
+tbody tr:hover { background:color-mix(in srgb, var(--ink) 4%, transparent); }
+td.r, th.r { text-align:right; font-variant-numeric:tabular-nums; }
+td .sub { display:block; color:var(--muted); font-size:12px; }
+td.empty { color:var(--muted); text-align:center; padding:16px; }
+.badge { display:inline-block; font-size:12px; padding:1px 8px; border-radius:99px; border:1px solid var(--line); }
+.ok { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--rust); }
+.err { color:var(--rust); margin-top:8px; }
+.note { color:var(--muted); font-size:12px; margin:16px 0 8px; max-width:70ch; }

@@ -21,6 +21,7 @@ import selectors
 import socket
 import struct
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -42,6 +43,10 @@ KEY = hmac.new(UAM_SECRET.encode(), b"radius", hashlib.sha256).hexdigest()
 
 ACCESS_REQUEST, ACCESS_ACCEPT, ACCESS_REJECT, ACCT_REQUEST, ACCT_RESPONSE = 1, 2, 3, 4, 5
 USER_NAME, USER_PASSWORD, SESSION_TIMEOUT, IDLE_TIMEOUT, CALLING_STATION, VSA, MSG_AUTH = 1, 2, 27, 28, 31, 26, 80
+FRAMED_IP, STATUS, IN_OCT, OUT_OCT, SESS_ID, SESS_TIME, CAUSE, IN_GIGA, OUT_GIGA, INTERIM = 8, 40, 42, 43, 44, 46, 49, 52, 53, 85
+STATUS_NAMES = {1: "start", 2: "stop", 3: "interim"}
+CAUSES = {1: "user", 2: "lost", 3: "lost", 4: "idle", 5: "timeout", 6: "admin", 7: "admin", 10: "nas", 11: "nas"}
+INTERIM_SEC = int(os.environ.get("ACCT_INTERIM", "60"))  # как часто роутер присылает трафик и время
 WISPR = 14122  # WISPr-Bandwidth-Max-Up = 7, Max-Down = 8 (бит/с) — Chilli ими режет скорость
 
 secret: bytes | None = os.environ["RADIUS_SECRET"].encode() if os.environ.get("RADIUS_SECRET") else None
@@ -96,6 +101,24 @@ def ask_portal(user: str, pw: str, mac: str) -> dict:
         return json.loads(r.read())
 
 
+def acct_ok(data: bytes, ln: int, sec: bytes) -> bool:
+    """Подпись Accounting-Request: MD5(заголовок + 16 нулей + атрибуты + ключ)."""
+    return hmac.compare_digest(hashlib.md5(data[:4] + b"\0" * 16 + data[20:ln] + sec).digest(), data[4:20])
+
+
+def u32(v: bytes | None) -> int:
+    return struct.unpack("!I", v)[0] if v and len(v) == 4 else 0
+
+
+def send_acct(d: dict) -> None:
+    try:
+        req = urllib.request.Request(PORTAL + "/api/radius/acct", method="POST", data=json.dumps(d).encode(),
+                                     headers={"Content-Type": "application/json", "X-Radius-Key": KEY, "User-Agent": "assalom-radius"})
+        urllib.request.urlopen(req, timeout=10).close()
+    except Exception as e:
+        say("учёт не отправлен:", type(e).__name__)
+
+
 def reply(code: int, pid: int, ra: bytes, attrs: bytes, sec: bytes, with_ma: bool) -> bytes:
     if with_ma:  # Message-Authenticator: HMAC-MD5 по пакету с нулевым полем и аутентификатором запроса
         attrs += attr(MSG_AUTH, b"\0" * 16)
@@ -114,8 +137,27 @@ def handle(data: bytes, src: str) -> bytes | None:
     code, pid, ln = struct.unpack("!BBH", data[:4])
     ra, a = data[4:20], attrs_parse(data[20:ln])
     get = lambda t: next((v for k, v in a if k == t), None)
-    if code == ACCT_REQUEST:  # учёт не ведём (время считает портал), но отвечаем, иначе Chilli будет повторять
-        sec = secret if secret is not None else CANDIDATES[0].encode()
+    if code == ACCT_REQUEST:  # присутствие и трафик → портал (в фоне, роутеру отвечаем сразу)
+        sec = secret if secret is not None else next((c.encode() for c in CANDIDATES if acct_ok(data, ln, c.encode())), None)
+        if sec is None or not acct_ok(data, ln, sec):
+            say("учёт: неверная подпись — пропускаю")
+            return None
+        if secret is None:
+            secret = sec
+            say("общий ключ RADIUS определён по учёту (вариант", CANDIDATES.index(sec.decode()) + 1, ")")
+        st = STATUS_NAMES.get(u32(get(STATUS)))
+        if st:
+            d = {"status": st, "id": (get(SESS_ID) or b"").decode("ascii", "replace")[:64],
+                 "user": (get(USER_NAME) or b"").decode("utf-8", "replace")[:64],
+                 "mac": (get(CALLING_STATION) or b"").decode("ascii", "replace").upper().replace(":", "-")[:17],
+                 "ip": socket.inet_ntoa(get(FRAMED_IP)) if len(get(FRAMED_IP) or b"") == 4 else "",
+                 "secs": u32(get(SESS_TIME)), "up": u32(get(IN_OCT)) + (u32(get(IN_GIGA)) << 32),
+                 "down": u32(get(OUT_OCT)) + (u32(get(OUT_GIGA)) << 32),
+                 "cause": CAUSES.get(u32(get(CAUSE)), str(u32(get(CAUSE)) or "")) if st == "stop" else ""}
+            if st != "interim":
+                say(f"учёт {st} {d['mac']} {d['secs'] // 60} мин ↓{d['down'] // 1048576} МБ ↑{d['up'] // 1048576} МБ {d['cause']}")
+            if d["id"]:
+                threading.Thread(target=send_acct, args=(d,), daemon=True).start()
         return reply(ACCT_RESPONSE, pid, ra, b"", sec, False)
     if code != ACCESS_REQUEST:
         return None
@@ -139,6 +181,7 @@ def handle(data: bytes, src: str) -> bytes | None:
     if d.get("accept"):
         bps = int(d.get("kbps", 2048)) * 1024
         at = (attr(SESSION_TIMEOUT, struct.pack("!I", int(d["timeout"]))) + attr(IDLE_TIMEOUT, struct.pack("!I", int(d.get("idle", 900))))
+              + attr(INTERIM, struct.pack("!I", INTERIM_SEC))
               + vsa(WISPR, 8, struct.pack("!I", bps)) + vsa(WISPR, 7, struct.pack("!I", bps // 2)))
         say(f"ACCEPT {mac} на {int(d['timeout']) // 60} мин, {d.get('kbps')} кбит/с")
         return reply(ACCESS_ACCEPT, pid, ra, at, secret, with_ma)

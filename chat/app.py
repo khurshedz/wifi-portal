@@ -355,6 +355,13 @@ async def access_cmd(m: dict, text: str) -> None:
                 n = int(args[1]) if len(args) > 1 and args[1].isdigit() else 1
                 cs = access.make_codes(q, int(args[0]), n)
                 out = f"🎟 Коды на {args[0]} мин ({n} шт.):\n" + "\n".join(cs)
+            elif cmd == "dash":
+                if args and args[0] == "off":  # выйти из админки на всех устройствах
+                    q("INSERT OR REPLACE INTO kv VALUES('adm_epoch',?)", (secrets.token_hex(4),))
+                    out = "✅ Все входы в панель сброшены"
+                else:
+                    out = (f"📊 Панель (ссылка одноразовая, 10 мин):\n{PORTAL_URL.rstrip('/')}/admin?t={admin_token(600)}\n"
+                           "Вход действует 12 ч на этом устройстве. /dash off — выйти везде.")
             elif cmd == "online":
                 rows = q("SELECT u.login, s.mode, s.mac, s.until FROM sessions s JOIN users u ON u.id=s.user_id ORDER BY s.until")
                 out = f"🌐 В сети: {len(rows)}\n" + "\n".join(
@@ -363,7 +370,7 @@ async def access_cmd(m: dict, text: str) -> None:
                 out = ("Команды доступа:\n/adduser логин [минуты] — создать (пароль придумает бот)\n"
                        "/addtime логин минуты — добавить (или -минуты)\n/user логин — карточка и журнал\n"
                        "/kick логин — отключить сейчас\n/block, /unblock логин\n/resetdev логин — сбросить привязку устройств\n"
-                       "/codes минуты [кол-во] — коды пополнения\n/online — кто в сети")
+                       "/codes минуты [кол-во] — коды пополнения\n/online — кто в сети\n/dash — ссылка на панель (кто в сети, трафик, история)")
     except access.AccessError as e:
         out = "⚠️ " + str(e)
     await reply(m, out)
@@ -443,7 +450,7 @@ async def poll_telegram():
                 if text and re.match(r"^/(visits|stats|who)(@\w+)?(\s|$)", text):
                     await visits_cmd(m, text)
                     continue
-                if text and re.match(r"^/(adduser|addtime|user|kick|block|unblock|resetdev|codes|online)(@\w+)?(\s|$)", text):
+                if text and re.match(r"^/(adduser|addtime|user|kick|block|unblock|resetdev|codes|online|dash)(@\w+)?(\s|$)", text):
                     await access_cmd(m, text)
                     continue
                 if text and re.match(r"^/(del|ban|unban|clear)(@\w+)?(\s|$)", text):
@@ -741,7 +748,7 @@ DB_EXPORT = {  # таблица -> сколько последних строк 
     "room": 1000, "messages": 5000, "visits": 20000,
     # доступ в интернет: аккаунты и балансы обязаны пережить деплой
     "users": 1000000, "user_sids": 1000000, "user_devices": 1000000, "sessions": 100000,
-    "free_use": 200000, "reg_marks": 200000, "dev_users": 1000000, "codes": 1000000, "access_log": 50000, "chilli_ctx": 100000,
+    "free_use": 200000, "reg_marks": 200000, "dev_users": 1000000, "codes": 1000000, "access_log": 50000, "chilli_ctx": 100000, "net_acct": 50000,
 }
 
 
@@ -797,7 +804,7 @@ async def healthz():
 
 @app.get("/static/{name}")
 async def static(name: str):
-    if name not in {"chat.js", "chat.css", "info.js", "game.js", "access.js"}:
+    if name not in {"chat.js", "chat.css", "info.js", "game.js", "access.js", "admin.js", "admin.css"}:
         raise HTTPException(404)
     return FileResponse(BASE / "static" / name)
 
@@ -1043,6 +1050,7 @@ async def access_action(action: str, request: Request):
 
 
 # ---------- RADIUS-посредник на ПК спрашивает решение здесь ----------
+IDLE_SEC = int(os.environ.get("IDLE_SEC", "900"))  # Chilli отключит гостя после стольких секунд без трафика
 RADIUS_CHUNK = int(os.environ.get("RADIUS_CHUNK", "3600"))  # максимум за один вход; kick/block срабатывают не позже
 SPEED = {"free": int(os.environ.get("FREE_KBPS", "2048")), "paid": int(os.environ.get("PAID_KBPS", "5120"))}
 
@@ -1069,7 +1077,88 @@ async def radius(body: RadiusIn, request: Request):
     if not r:
         return {"accept": False}
     secs, mode = r
-    return {"accept": True, "timeout": secs, "idle": 900, "kbps": SPEED.get(mode, SPEED["free"])}
+    return {"accept": True, "timeout": secs, "idle": IDLE_SEC, "kbps": SPEED.get(mode, SPEED["free"])}
+
+
+class AcctIn(BaseModel):
+    status: str = Field(pattern=r"^(start|interim|stop)$")
+    id: str = Field(min_length=1, max_length=64)
+    user: str = Field(default="", max_length=64)
+    mac: str = Field(max_length=17)
+    ip: str = Field(default="", max_length=45)
+    secs: int = Field(ge=0, le=10 ** 8)
+    up: int = Field(ge=0, le=10 ** 15)
+    down: int = Field(ge=0, le=10 ** 15)
+    cause: str = Field(default="", max_length=16)
+
+
+@app.post("/api/radius/acct")
+async def radius_acct(body: AcctIn, request: Request):
+    if not (UAM_SECRET and hmac.compare_digest(request.headers.get("x-radius-key", ""), radius_key())):
+        raise HTTPException(404)
+    mac = body.mac.upper().replace(":", "-")
+    if not MAC_RE.match(mac):
+        return {"ok": False}
+    async with db_lock:
+        access.acct_update(q, body.status, body.id, body.user, mac, body.ip, body.secs, body.up, body.down,
+                           body.cause, IDLE_SEC)
+    return {"ok": True}
+
+
+# ---------- панель администратора (вход по одноразовой ссылке из Telegram, /dash) ----------
+ADM_COOKIE, ADM_TTL = "adm", 12 * 3600
+adm_used: dict[str, float] = {}
+
+
+def admin_token(ttl: int) -> str:
+    exp = str(int(time.time()) + ttl)
+    epoch = (q("SELECT v FROM kv WHERE k='adm_epoch'") or [[""]])[0][0]
+    return exp + "." + hmac.new(UAM_SECRET.encode(), f"admin:{epoch}:{exp}".encode(), hashlib.sha256).hexdigest()[:40]
+
+
+def admin_valid(tok: str | None) -> bool:
+    if not (UAM_SECRET and tok and re.fullmatch(r"\d{10}\.[0-9a-f]{40}", tok)):
+        return False
+    exp, sig = tok.split(".")
+    epoch = (q("SELECT v FROM kv WHERE k='adm_epoch'") or [[""]])[0][0]
+    good = hmac.new(UAM_SECRET.encode(), f"admin:{epoch}:{exp}".encode(), hashlib.sha256).hexdigest()[:40]
+    return int(exp) > time.time() and hmac.compare_digest(sig, good)
+
+
+@app.get("/admin")
+async def admin_page(request: Request, t: str = ""):
+    if t:
+        if not auth_sid.ok("adm:" + client_ip(request)) or not admin_valid(t) or t in adm_used:
+            raise HTTPException(404)
+        now = time.time()
+        for k in [k for k, v in adm_used.items() if v < now]:
+            adm_used.pop(k, None)
+        adm_used[t] = now + 600
+        resp = RedirectResponse("/admin", status_code=303)
+        resp.set_cookie(ADM_COOKIE, admin_token(ADM_TTL), max_age=ADM_TTL, httponly=True, secure=True,
+                        samesite="strict", path="/")
+        return resp
+    if not admin_valid(request.cookies.get(ADM_COOKIE)):
+        raise HTTPException(404)
+    return FileResponse(BASE / "static" / "admin.html")
+
+
+@app.get("/api/admin")
+async def admin_api(request: Request):
+    if not admin_valid(request.cookies.get(ADM_COOKIE)) or request.headers.get("x-requested-with") != "chat":
+        raise HTTPException(404)
+    async with db_lock:
+        d = access.dashboard(q)
+        macs = {o["mac"] for o in d["online"]} | {h["mac"] for h in d["history"]}
+        dev = {}
+        for mac in macs:  # чем является устройство — из журнала посещений портала
+            r = q("SELECT model, os, browser, kind FROM visits WHERE mac=? ORDER BY last DESC LIMIT 1", (mac,))
+            if r:
+                model, os_, br, kind = r[0]
+                dev[mac] = " · ".join(x for x in (model or kind, os_) if x and x != "?")
+    for row in d["online"] + d["history"]:
+        row["device"] = dev.get(row["mac"], "")
+    return d
 
 
 @app.exception_handler(404)

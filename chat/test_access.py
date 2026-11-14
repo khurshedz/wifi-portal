@@ -163,3 +163,32 @@ def test_identify_by_any_known_signal(q):
     assert b != a                                          # совсем новое устройство — новый аккаунт
     with pytest.raises(AccessError):
         access.quick_user(q, "sidF", None, "d" * 64)       # не из Wi-Fi и ничего не совпало
+
+
+def test_accounting_presence_and_traffic(q):
+    u = user(q, "ali")
+    access.start(q, u, "s1", M1, FP1, "free", T0)
+    tu, _ = access.relogon(q, u, M1)
+    access.acct_update(q, "start", "A1", tu, M1, "10.1.30.5", 0, 0, 0, now=T0 + 2)
+    access.acct_update(q, "interim", "A1", tu, M1, "10.1.30.5", 60, 1000, 61000, now=T0 + 62)
+    d = access.dashboard(q, T0 + 70)
+    [o] = d["online"]
+    assert o["user"] == "ali" and o["router"] and o["down"] == 61000 and round(o["rate_down"]) == 1017
+    # ушёл: Chilli закрыл по простою через 900 с — в длительность простой не входит
+    access.acct_update(q, "stop", "A1", "", M1, "", 300 + 900, 2000, 90000, cause="idle", idle=900, now=T0 + 1202)
+    d = access.dashboard(q, T0 + 1300)
+    [h] = d["history"]
+    assert h["secs"] == 300 and h["cause"] == "idle" and h["user"] == "ali"
+    assert d["today"]["bytes"] == 92000 and d["users"][0]["today_secs"] == 300
+
+
+def test_accounting_after_session_gone_keeps_user(q):
+    u = user(q, "ali")
+    access.start(q, u, "s1", M1, FP1, "free", T0)
+    tu, _ = access.relogon(q, u, M1)
+    access.acct_update(q, "start", "A2", tu, M1, "", 0, 0, 0, now=T0)
+    access.stop(q, u, "kick", T0 + 10)  # кикнули: на роутере ещё до конца куска
+    d = access.dashboard(q, T0 + 20)
+    assert d["online"][0]["router"] and not d["online"][0]["portal"] and d["online"][0]["user"] == "ali"
+    access.acct_update(q, "stop", "A2", tu, M1, "", 100, 1, 2, cause="timeout", now=T0 + 100)
+    assert access.dashboard(q, T0 + 101)["online"] == []

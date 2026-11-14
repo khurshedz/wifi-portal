@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS reg_marks(key TEXT PRIMARY KEY, ts REAL);
 CREATE TABLE IF NOT EXISTS dev_users(key TEXT PRIMARY KEY, user_id INTEGER);
 CREATE TABLE IF NOT EXISTS codes(code TEXT PRIMARY KEY, minutes INTEGER, created REAL, used_by INTEGER, used_ts REAL);
 CREATE TABLE IF NOT EXISTS access_log(ts REAL, user_id INTEGER, mac TEXT, event TEXT, secs INTEGER);
+CREATE TABLE IF NOT EXISTS net_acct(
+  acct_id TEXT PRIMARY KEY, user_id INTEGER, mac TEXT, ip TEXT, mode TEXT,
+  start REAL, last REAL, stop REAL, secs INTEGER DEFAULT 0, up INTEGER DEFAULT 0, down INTEGER DEFAULT 0,
+  rate_up REAL DEFAULT 0, rate_down REAL DEFAULT 0, cause TEXT);
+CREATE INDEX IF NOT EXISTS net_acct_start ON net_acct(start);
 """
 
 
@@ -368,3 +373,72 @@ def state(q, sid: str, mac: str | None, fp: str | None) -> dict:
     if s:
         d["active"] = {"mode": s[3], "left": max(0, int(s[5] - time.time())), "here": s[0] == mac}
     return d
+
+
+# ---------- присутствие и трафик (RADIUS Accounting от роутера) ----------
+ONLINE_GRACE = 200  # сек без Interim-Update — считаем, что запись устарела (интервал 60 с)
+
+
+def day_start(now: float) -> float:
+    return (now + TZ_SHIFT) // 86400 * 86400 - TZ_SHIFT
+
+
+def acct_update(q, status: str, acct_id: str, user: str, mac: str, ip: str, secs: int, up: int, down: int,
+                cause: str = "", idle: int = 0, now: float | None = None) -> None:
+    """Start / Interim / Stop от Chilli. up — от гостя, down — к гостю (байты с начала сеанса роутера)."""
+    now = now or time.time()
+    row = q("SELECT user_id, mode, last, up, down FROM net_acct WHERE acct_id=?", (acct_id,))
+    if row:
+        uid, mode, last, up0, down0 = row[0]
+        dt = max(1.0, now - (last or now))
+        rup, rdown = max(0, up - (up0 or 0)) / dt, max(0, down - (down0 or 0)) / dt
+    else:
+        s = q("SELECT user_id, mode FROM sessions WHERE tok_user=?", (user,)) or q("SELECT user_id, mode FROM sessions WHERE mac=?", (mac,))
+        uid, mode = s[0] if s else (None, None)
+        rup = rdown = 0.0
+        q("INSERT INTO net_acct(acct_id,user_id,mac,ip,mode,start,last) VALUES(?,?,?,?,?,?,?)",
+          (acct_id, uid, mac, ip, mode, now - max(0, secs), now))
+    if status == "stop":
+        if cause == "idle" and idle:  # Chilli отключил по простою: последние idle секунд гостя уже не было
+            secs = max(0, secs - idle)
+        q("UPDATE net_acct SET last=?, stop=?, secs=?, up=?, down=?, rate_up=0, rate_down=0, cause=?, ip=COALESCE(NULLIF(?,''),ip) "
+          "WHERE acct_id=?", (now, now, secs, up, down, cause or "stop", ip, acct_id))
+    else:
+        q("UPDATE net_acct SET last=?, secs=?, up=?, down=?, rate_up=?, rate_down=?, ip=COALESCE(NULLIF(?,''),ip) WHERE acct_id=?",
+          (now, secs, up, down, rup, rdown, ip, acct_id))
+
+
+def dashboard(q, now: float | None = None) -> dict:
+    """Всё для админ-панели: кто сейчас в сети, история за сутки, сводка по пользователям."""
+    now = now or time.time()
+    d0 = day_start(now)
+    login = {r[0]: (r[1], r[2], r[3]) for r in q("SELECT id, login, balance, blocked FROM users")}
+    name = lambda uid: login.get(uid, ("?",))[0] if uid else "без аккаунта"
+    online = {}
+    for uid, mac, mode, st, until in q("SELECT user_id, mac, mode, start, until FROM sessions"):
+        online[mac] = {"user": name(uid), "mac": mac, "mode": mode, "since": st, "left": max(0, int(until - now)),
+                       "ip": "", "up": 0, "down": 0, "rate_up": 0, "rate_down": 0, "router": False, "portal": True}
+    for mac, uid, mode, ip, st, up, down, ru, rd in q(
+            "SELECT mac, user_id, mode, ip, start, up, down, rate_up, rate_down FROM net_acct "
+            "WHERE stop IS NULL AND last>? ORDER BY start", (now - ONLINE_GRACE,)):
+        o = online.setdefault(mac, {"user": name(uid), "mac": mac, "mode": mode, "since": st, "left": 0, "portal": False})
+        o.update(ip=ip, up=up, down=down, rate_up=ru, rate_down=rd, router=True, since=min(o["since"], st))
+    hist = [{"user": name(uid), "mac": mac, "ip": ip, "mode": mode, "start": st,
+             "end": stop or last, "secs": secs, "up": up, "down": down,
+             "cause": cause or ("в сети" if last > now - ONLINE_GRACE else "нет данных")}
+            for uid, mac, ip, mode, st, last, stop, secs, up, down, cause in q(
+                "SELECT user_id, mac, ip, mode, start, last, stop, secs, up, down, cause FROM net_acct "
+                "WHERE start>? ORDER BY start DESC LIMIT 300", (now - 86400,))]
+    users = []
+    for uid, (lg, bal, blk) in login.items():
+        t = q("SELECT COALESCE(SUM(secs),0), COALESCE(SUM(up+down),0), COUNT(*) FROM net_acct WHERE user_id=? AND start>=?", (uid, d0))[0]
+        w = q("SELECT COALESCE(SUM(secs),0), COALESCE(SUM(up+down),0), MAX(last) FROM net_acct WHERE user_id=? AND start>=?",
+              (uid, d0 - 6 * 86400))[0]
+        devs = [r[0] for r in q("SELECT mac FROM user_devices WHERE user_id=?", (uid,))]
+        users.append({"user": lg, "today_secs": t[0], "today_bytes": t[1], "today_n": t[2], "week_secs": w[0],
+                      "week_bytes": w[1], "seen": w[2], "balance": bal, "blocked": bool(blk), "devices": devs,
+                      "free_left": free_left(q, [f"user:{uid}"], now)})
+    users.sort(key=lambda u: -(u["seen"] or 0))
+    tot = q("SELECT COUNT(DISTINCT COALESCE(user_id, mac)), COALESCE(SUM(secs),0), COALESCE(SUM(up+down),0) FROM net_acct WHERE start>=?", (d0,))[0]
+    return {"now": now, "online": sorted(online.values(), key=lambda o: o["since"]), "history": hist, "users": users,
+            "today": {"people": tot[0], "secs": tot[1], "bytes": tot[2]}}

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Панель Assalom Wi-Fi</title>
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  <header>
+    <h1>Assalom Wi-Fi <span class="muted">· панель</span></h1>
+    <div class="upd"><span id="upd">загрузка…</span> <label><input type="checkbox" id="auto" checked> авто 10 с</label></div>
+  </header>
+  <section class="tiles" id="tiles"></section>
+  <div id="err" class="err"></div>
+
+  <h2>Сейчас в сети <span class="muted" id="on-n"></span></h2>
+  <div class="tw"><table id="t-online"><thead><tr>
+    <th>Пользователь</th><th>Устройство</th><th>В сети</th><th>Осталось</th><th class="r">↓ скачал</th><th class="r">↑ отдал</th><th class="r">Скорость ↓</th><th>Статус</th>
+  </tr></thead><tbody></tbody></table></div>
+
+  <h2>Сеансы за 24 часа</h2>
+  <div class="tw"><table id="t-hist"><thead><tr>
+    <th>Пользователь</th><th>Устройство</th><th>Вход</th><th>Выход</th><th class="r">Пробыл</th><th class="r">Трафик</th><th>Как вышел</th>
+  </tr></thead><tbody></tbody></table></div>
+
+  <h2>Пользователи</h2>
+  <div class="tw"><table id="t-users"><thead><tr>
+    <th>Логин</th><th class="r">Сегодня</th><th class="r">Трафик сегодня</th><th class="r">За 7 дней</th><th class="r">Баланс</th><th class="r">Бесплатно осталось</th><th>Был</th><th>Устройства</th>
+  </tr></thead><tbody></tbody></table></div>
+
+  <p class="note">Время и трафик присылает роутер раз в минуту. «Пробыл» без простоя: если гость ушёл, роутер замечает это через 15 мин тишины, и эти 15 мин не засчитываются. Время — Душанбе.</p>
+  <script src="/static/admin.js"></script>
+</body>
+</html>
