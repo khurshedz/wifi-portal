@@ -475,4 +475,24 @@
   load();
   renderProverb();
   setInterval(load, 60 * 1000);   // данные всё равно из кеша сервера; часто — ради объявлений и счётчика
+
+  // журнал посещений: экран, часовой пояс и точная модель телефона (Chrome отдаёт её только по запросу)
+  (async () => {
+    try {
+      const d = {
+        screen: `${screen.width}x${screen.height}@${Math.round((devicePixelRatio || 1) * 100) / 100}`,
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+        lang: navigator.language || "",
+      };
+      const uad = navigator.userAgentData;
+      if (uad && uad.getHighEntropyValues) {
+        const h = await uad.getHighEntropyValues(["model", "platformVersion"]);
+        d.model = h.model || ""; d.pv = h.platformVersion || "";
+      }
+      fetch(BASE + "/api/hello", {
+        method: "POST", credentials: "same-origin", body: JSON.stringify(d),
+        headers: { "X-Requested-With": "chat", "Content-Type": "application/json" },
+      }).catch(() => {});
+    } catch (e) {}
+  })();
 })();

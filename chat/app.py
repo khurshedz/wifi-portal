@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 
 import info
+import visits
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS room(
 CREATE TABLE IF NOT EXISTS room_names(sid TEXT PRIMARY KEY, display TEXT UNIQUE COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS bans(sid TEXT PRIMARY KEY, ts REAL);
 """)
+db.executescript(visits.SCHEMA)
 db_lock = asyncio.Lock()
 
 
@@ -220,6 +222,70 @@ async def moderate(m: dict, text: str) -> None:
         print("moderate reply error:", e)
 
 
+# ---------- журнал посещений ----------
+visit_notify = Limiter(20, 60)  # не больше 20 уведомлений в минуту в тему «Посетители»
+
+
+async def visits_topic() -> int:
+    row = q("SELECT v FROM kv WHERE k='visits_topic'")
+    if row:
+        return int(row[0][0])
+    async with db_lock:
+        row = q("SELECT v FROM kv WHERE k='visits_topic'")
+        if row:
+            return int(row[0][0])
+        t = await tg("createForumTopic", chat_id=TG_CHAT_ID, name="📊 Посетители")
+        q("INSERT OR REPLACE INTO kv VALUES('visits_topic',?)", (str(t["message_thread_id"]),))
+        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=t["message_thread_id"], text=(
+            "Сюда пишется каждый новый заход на страницу (повтор в течение 30 мин — та же запись).\n"
+            "/visits — последние 15 заходов (/visits 40 — больше)\n/stats — сводка: сколько, марки, браузеры\n"
+            "/who a1b2c3 — все заходы устройства с этим 🆔 (+ полный User-Agent)"))
+        return t["message_thread_id"]
+
+
+async def notify_visit(vid: int) -> None:
+    await asyncio.sleep(6)  # ждём уточнения от страницы (модель, экран)
+    try:
+        r = visits.rows(q, "v.id=? AND v.sent=0", (vid,), 1)
+        if not r or not visit_notify.ok("all"):
+            return
+        q("UPDATE visits SET sent=1 WHERE id=?", (vid,))
+        before = q("SELECT COUNT(*) FROM visits WHERE sid=(SELECT sid FROM visits WHERE id=?) AND id<?", (vid, vid))[0][0]
+        head = "🆕 Новое устройство" if not before else f"🔁 Снова зашёл (визит {before + 1})"
+        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=await visits_topic(),
+                 text=head + "\n" + visits.line(r[0]), disable_notification=True)
+    except Exception as e:
+        print("visit notify error:", e)
+
+
+async def visits_cmd(m: dict, text: str) -> None:
+    parts = text.split()
+    cmd = parts[0].split("@")[0][1:]
+    arg = parts[1] if len(parts) > 1 else ""
+    if cmd == "stats":
+        msgs = [visits.stats(q)]
+    elif cmd == "who":
+        rs = visits.rows(q, "v.dev=?", (arg.lower(),), 10) if re.fullmatch(r"[0-9a-fA-F]{6}", arg) else []
+        msgs = [f"Заходов устройства {arg}: {len(rs)} (последние)"] + [visits.line(r, full=(i == 0)) for i, r in enumerate(rs)] \
+            if rs else ["Формат: /who a1b2c3 (🆔 из журнала)"]
+    else:
+        n = min(int(arg), 50) if arg.isdigit() else 15
+        rs = visits.rows(q, limit=n)
+        msgs = [f"Последние заходы: {len(rs)}"] + [visits.line(r) for r in reversed(rs)]
+    chunk, out = "", []
+    for x in msgs:  # лимит Telegram — 4096 символов
+        if len(chunk) + len(x) > 3800:
+            out.append(chunk); chunk = ""
+        chunk += x + "\n\n"
+    out.append(chunk)
+    thread = {"message_thread_id": m["message_thread_id"]} if m.get("is_topic_message") else {}
+    for c in out:
+        try:
+            await tg("sendMessage", chat_id=TG_CHAT_ID, text=c.strip(), **thread)
+        except Exception as e:
+            print("visits cmd error:", e)
+
+
 def guest_num(sid: str) -> int:
     row = q("SELECT num FROM guests WHERE sid=?", (sid,))
     if row:
@@ -276,6 +342,9 @@ async def poll_telegram():
                 text = m.get("text") or m.get("caption")
                 if text and re.match(r"^/news(@\w+)?(\s|$)", text):
                     await set_news(m, text)
+                    continue
+                if text and re.match(r"^/(visits|stats|who)(@\w+)?(\s|$)", text):
+                    await visits_cmd(m, text)
                     continue
                 if text and re.match(r"^/(del|ban|unban|clear)(@\w+)?(\s|$)", text):
                     await moderate(m, text)
@@ -461,7 +530,48 @@ async def index(request: Request):
         # убираем подписанные параметры из адресной строки
         return with_cookie(RedirectResponse("/", status_code=303), sid)
     resp = FileResponse(BASE / "static" / "index.html")
-    return resp if sid else with_cookie(resp, secrets.token_urlsafe(32))
+    if not sid:
+        sid = secrets.token_urlsafe(32)
+        with_cookie(resp, sid)
+    log_visit(request, sid)
+    # просим Chrome прислать точную модель телефона (без этого в UA часто просто «K»)
+    resp.headers["Accept-CH"] = "Sec-CH-UA-Model, Sec-CH-UA-Platform-Version"
+    return resp
+
+
+def log_visit(request: Request, sid: str) -> None:
+    try:
+        h = request.headers
+        dev = q("SELECT mac FROM devices WHERE sid=?", (sid,))
+        ua = h.get("user-agent", "")
+        model = h.get("sec-ch-ua-model", "").strip('" ')
+        vid, new = visits.record(q, sid, client_ip(request), ua, h.get("accept-language", "").split(",")[0],
+                                 h.get("referer", ""), dev[0][0] if dev else None, from_wifi(request, sid))
+        if model or h.get("sec-ch-ua-platform-version"):
+            visits.hello(q, sid, {"model": model, "pv": h.get("sec-ch-ua-platform-version", "").strip('" ')})
+        if new:
+            asyncio.create_task(notify_visit(vid))
+    except Exception as e:  # журнал не должен ломать страницу
+        print("visit log error:", e)
+
+
+class HelloIn(BaseModel):
+    screen: str = Field("", max_length=30)
+    tz: str = Field("", max_length=40)
+    lang: str = Field("", max_length=40)
+    model: str = Field("", max_length=60)
+    pv: str = Field("", max_length=20)
+
+
+hello_lim = Limiter(10, 60)
+
+
+@app.post("/api/hello")
+async def hello(body: HelloIn, request: Request):
+    sid = require_sid(request)
+    if hello_lim.ok(sid):
+        visits.hello(q, sid, {k: clean(v, 60) for k, v in body.model_dump().items()})
+    return {"ok": True}
 
 
 def require_page(request: Request) -> None:
@@ -494,7 +604,7 @@ async def diag_ip(request: Request):
 
 DB_EXPORT = {  # таблица -> сколько последних строк передавать новой версии
     "guests": 100000, "devices": 100000, "bans": 100000, "room_names": 100000, "kv": 1000,
-    "room": 1000, "messages": 5000,
+    "room": 1000, "messages": 5000, "visits": 20000,
 }
 
 
