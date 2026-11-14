@@ -81,6 +81,11 @@ def brand_of(model: str) -> str:
 def parse_ua(ua: str, model_hint: str = "", pv_hint: str = "") -> dict:
     ua = ua or ""
     kind, brand, model, os_ = "?", "", "", "?"
+    # мессенджер imo сам открывает ссылку из чата для превью: «imoAndroid/2026.08; 12; REL; ADY-LX9; HUAWEI; ...»
+    if m := re.match(r"imoAndroid/[\d.]+;\s*([\d.]+);\s*\w+;\s*([^;]+);\s*([^;]+);", ua):
+        model = clip(model_hint or m[2].strip(), 60)
+        return {"kind": "телефон", "brand": m[3].strip().title(), "model": model, "os": f"Android {m[1]}",
+                "browser": "imo — превью ссылки в чате"}
     if re.search(r"iPhone|iPad|iPod", ua):
         brand = "Apple"
         model = "iPad" if "iPad" in ua else "iPhone"
