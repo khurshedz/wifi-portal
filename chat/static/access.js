@@ -2,9 +2,9 @@
   const $ = (id) => document.getElementById(id);
   const card = $("card-net");
   if (!card) return;
-  let fp = "", st = null, timer = null;
+  let fp = "", st = null, timer = null, codeOpen = false;
 
-  // отпечаток устройства: не секрет и не личные данные — только помогает не раздавать бесплатные минуты повторно
+  // отпечаток устройства: не личные данные — один из признаков, по которым узнаём телефон
   const fingerprint = async () => {
     try {
       const c = document.createElement("canvas"); c.width = 200; c.height = 40;
@@ -31,8 +31,10 @@
     return data;
   };
 
-  const mins = (s) => s >= 3600 ? `${Math.floor(s / 3600)} ч ${Math.floor(s % 3600 / 60)} мин` : `${Math.ceil(s / 60)} мин`;
-  const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const mins = (s) => s >= 3600 ? `${Math.floor(s / 3600)} ч ${Math.floor(s % 3600 / 60)} мин` : `${Math.floor(s / 60)} мин`;
+  const clock = (s) => s >= 3600
+    ? `${Math.floor(s / 3600)}:${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`
+    : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   const el = (tag, attrs = {}, text = "") => {
     const e = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
@@ -40,103 +42,100 @@
     return e;
   };
   const body = $("net-body"), err = $("net-err");
-  const fail = (e) => { err.textContent = e.message || String(e); };
 
   const run = async (path, data, btn) => {
     err.textContent = "";
     if (btn) btn.disabled = true;
     try {
-      st = await api(path, data);
+      st = await api(path, { ...data, fp });
       if (st.nav) { location.href = st.nav; return; }  // вход/выход в роутере (Chilli), он вернёт на портал
       render();
-    }
-    catch (e) { fail(e); }
+    } catch (e) { err.textContent = e.message; }
     finally { if (btn) btn.disabled = false; }
   };
 
-  const authForm = () => {
-    const f = el("form", { class: "net-form", autocomplete: "on" });
-    const l = el("input", { name: "username", autocomplete: "username", placeholder: "Логин (латиница)", maxlength: "20", required: "" });
-    const p = el("input", { name: "password", type: "password", autocomplete: "current-password", placeholder: "Пароль", maxlength: "64", required: "" });
-    const bIn = el("button", { type: "submit" }, "Войти");
-    const bReg = el("button", { type: "button", class: "ghost" }, "Создать аккаунт");
-    f.append(l, p, el("div", { class: "net-row" }));
-    f.lastChild.append(bIn, bReg);
-    f.addEventListener("submit", (e) => { e.preventDefault(); run("/api/access/login", { login: l.value, password: p.value, fp }, bIn); });
-    bReg.addEventListener("click", () => {
-      if (!f.reportValidity()) return;
-      run("/api/access/register", { login: l.value, password: p.value, fp }, bReg);
-    });
-    return f;
+  const bigButton = (title, sub, onClick, disabled) => {
+    const b = el("button", { type: "button", class: "net-big" });
+    b.append(el("span", { class: "t" }, title), el("span", { class: "s" }, sub));
+    b.disabled = !!disabled;
+    b.addEventListener("click", () => onClick(b));
+    return b;
+  };
+
+  const codeBlock = () => {
+    const wrap = el("div", { class: "net-code" });
+    if (!codeOpen) {
+      const link = el("button", { type: "button", class: "link" }, "🎟 Есть код на время?");
+      link.addEventListener("click", () => { codeOpen = true; render(); });
+      wrap.append(link);
+      return wrap;
+    }
+    const f = el("form", { class: "net-row" });
+    const ci = el("input", { placeholder: "XXXXX-XXXXX", maxlength: "11", autocomplete: "off", autocapitalize: "characters" });
+    const cb = el("button", { type: "submit" }, "Ввести");
+    f.append(ci, cb);
+    f.addEventListener("submit", (e) => { e.preventDefault(); run("/api/access/redeem", { code: ci.value }, cb); });
+    wrap.append(f);
+    setTimeout(() => ci.focus(), 0);
+    return wrap;
   };
 
   const render = () => {
     clearInterval(timer);
     body.replaceChildren();
     if (!st) return;
-    if (!st.logged) {
-      body.append(el("p", { class: "muted small" },
-        `Войдите или создайте аккаунт: ${st.free_total} минут интернета в день бесплатно. Время привязано к аккаунту и одному устройству.`));
-      if (!st.device_ok) body.append(el("p", { class: "muted small" }, "Чтобы включить интернет, подключитесь к сети «Assalom Wi-Fi»."));
-      body.append(authForm());
+    if (!st.device_ok) {
+      body.append(el("p", { class: "net-hint" }, "Чтобы включить интернет, подключитесь к сети «Assalom Wi-Fi» и откройте эту страницу."));
       return;
     }
-    const head = el("div", { class: "net-head" });
-    head.append(el("b", {}, "👤 " + st.login));
-    const out = el("button", { type: "button", class: "link" }, "выйти");
-    out.addEventListener("click", () => run("/api/access/logout", {}, out));
-    head.append(out);
-    body.append(head);
-    if (st.active) {
-      const a = st.active;
+    const a = st.active;
+    if (a) {
       let left = a.left;
       const big = el("div", { class: "net-left" }, clock(left));
-      body.append(el("div", { class: "muted small" }, a.mode === "paid" ? "Интернет включён · с баланса" : "Интернет включён · бесплатные минуты"), big);
-      if (!a.here) body.append(el("p", { class: "muted small" }, "Включено на другом вашем устройстве. Нажмите «Включить здесь», чтобы перенести."));
+      body.append(el("div", { class: "net-on" }, a.here ? "✅ Интернет включён" : "Интернет включён на другом вашем устройстве"), big,
+                  el("div", { class: "net-hint" }, a.mode === "paid" ? "осталось с баланса" : "осталось бесплатных минут"));
       timer = setInterval(() => {
         left = Math.max(0, left - 1); big.textContent = clock(left);
         if (!left) { clearInterval(timer); setTimeout(load, 3000); }
       }, 1000);
-      const row = el("div", { class: "net-row" });
+      const row = el("div", { class: "net-links" });
       if (a.here) {
-        const again = el("button", { type: "button" }, "🔄 Не открывается? Подключить снова");
+        const again = el("button", { type: "button", class: "link" }, "Не открывается сайт?");
         again.addEventListener("click", () => run("/api/access/relogon", {}, again));
-        const stop = el("button", { type: "button", class: "ghost" }, "⏸ Остановить");
-        stop.addEventListener("click", () => run("/api/access/stop", {}, stop));
+        const stop = el("button", { type: "button", class: "link" }, "Остановить");
+        stop.addEventListener("click", () => {
+          if (confirm("Отключить интернет? Время сверх текущего часа вернётся на счёт.")) run("/api/access/stop", {}, stop);
+        });
         row.append(again, stop);
       } else {
-        const here = el("button", { type: "button" }, "Включить здесь");
-        here.addEventListener("click", () => run("/api/access/start", { mode: a.mode, fp }, here));
+        const here = el("button", { type: "button" }, "Включить на этом телефоне");
+        here.addEventListener("click", () => run("/api/access/start", { mode: a.mode }, here));
         row.append(here);
       }
       body.append(row);
-    } else {
-      const info = el("div", { class: "net-info" });
-      info.append(el("div", {}, `Бесплатно сегодня: ${st.free_left == null ? "—" : mins(st.free_left)}`),
-                  el("div", {}, `На балансе: ${mins(st.balance)}`));
-      body.append(info);
-      const row = el("div", { class: "net-row" });
-      const free = el("button", { type: "button" }, "▶ Бесплатно");
-      free.disabled = !st.device_ok || !st.free_left || st.free_left < 60;
-      free.addEventListener("click", () => run("/api/access/start", { mode: "free", fp }, free));
-      const paid = el("button", { type: "button", class: "ghost" }, "▶ С баланса");
-      paid.disabled = !st.device_ok || st.balance < 60;
-      paid.addEventListener("click", () => run("/api/access/start", { mode: "paid", fp }, paid));
-      row.append(free, paid);
-      body.append(row);
-      if (!st.device_ok) body.append(el("p", { class: "muted small" }, "Включить можно только из сети «Assalom Wi-Fi»."));
+      return;
     }
-    const cf = el("form", { class: "net-row net-code" });
-    const ci = el("input", { placeholder: "Код пополнения XXXXX-XXXXX", maxlength: "11", autocomplete: "off" });
-    const cb = el("button", { type: "submit", class: "ghost" }, "Ввести");
-    cf.append(ci, cb);
-    cf.addEventListener("submit", (e) => { e.preventDefault(); run("/api/access/redeem", { code: ci.value }, cb); });
-    body.append(cf);
+    const free = st.free_left || 0;
+    if (st.balance >= 60) {
+      body.append(bigButton("▶ Включить интернет", `с баланса · ${mins(st.balance)}`,
+        (b) => run("/api/access/start", { mode: "paid" }, b)));
+      if (free >= 60) {
+        const f = el("button", { type: "button", class: "link" }, `или бесплатно · ${mins(free)}`);
+        f.addEventListener("click", () => run("/api/access/start", { mode: "free" }, f));
+        const row = el("div", { class: "net-links" }); row.append(f); body.append(row);
+      }
+    } else if (free >= 60) {
+      body.append(bigButton("▶ Включить интернет", `бесплатно · осталось ${mins(free)} из ${st.free_total} мин сегодня`,
+        (b) => run("/api/access/start", { mode: "free" }, b)));
+    } else {
+      body.append(bigButton("Бесплатные минуты на сегодня закончились", `завтра снова ${st.free_total} минут · или введите код`, () => {}, true));
+    }
+    body.append(codeBlock());
   };
 
   const load = async () => {
     try { st = await api("/api/access?fp=" + encodeURIComponent(fp)); render(); err.textContent = ""; }
-    catch (e) { if (/404/.test(e.message)) card.hidden = true; else fail(e); }
+    catch (e) { if (/404/.test(e.message)) card.hidden = true; else err.textContent = e.message; }
   };
 
   card.hidden = false;

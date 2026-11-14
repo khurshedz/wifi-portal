@@ -181,14 +181,16 @@ button.icon { background: transparent; font-size: 22px; padding: 4px 6px; }
 /* игра */
 .game-card { margin: 12px 16px 0; }
 #game { width: 100%; aspect-ratio: 3 / 1; display: block; border-radius: 12px; touch-action: manipulation; cursor: pointer; outline: none; }
-/* интернет по аккаунту */
-.net .net-form { display: grid; gap: 8px; }
-.net-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-.net-row > * { flex: 1 1 140px; }
-.net-row input { min-width: 0; }
-.net button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
-.net button.link { background: transparent; color: var(--muted); padding: 0; text-decoration: underline; }
-.net-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
-.net-info { display: flex; gap: 16px; flex-wrap: wrap; font-size: 14px; }
-.net-left { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--rust); line-height: 1.1; margin: 4px 0; }
-.net p { margin: 4px 0; }
+/* интернет: одна кнопка */
+.net-big { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 14px 16px; border-radius: 14px; }
+.net-big .t { font-size: 18px; font-weight: 700; }
+.net-big .s { font-size: 12.5px; opacity: .9; }
+.net-big:disabled { background: var(--line); color: var(--ink); opacity: 1; }
+.net-on { font-weight: 700; font-size: 15px; }
+.net-left { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--rust); line-height: 1.1; margin: 2px 0; }
+.net-hint { color: var(--muted); font-size: 12.5px; margin: 2px 0; }
+.net-links { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+.net-code { margin-top: 10px; }
+.net-row { display: flex; gap: 8px; }
+.net-row input { flex: 1; min-width: 0; text-transform: uppercase; letter-spacing: .05em; }
+.net button.link { background: transparent; color: var(--muted); padding: 0; font-size: 13px; text-decoration: underline; }

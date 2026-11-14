@@ -741,7 +741,7 @@ DB_EXPORT = {  # таблица -> сколько последних строк 
     "room": 1000, "messages": 5000, "visits": 20000,
     # доступ в интернет: аккаунты и балансы обязаны пережить деплой
     "users": 1000000, "user_sids": 1000000, "user_devices": 1000000, "sessions": 100000,
-    "free_use": 200000, "reg_marks": 200000, "codes": 1000000, "access_log": 50000, "chilli_ctx": 100000,
+    "free_use": 200000, "reg_marks": 200000, "dev_users": 1000000, "codes": 1000000, "access_log": 50000, "chilli_ctx": 100000,
 }
 
 
@@ -992,9 +992,11 @@ async def access_action(action: str, request: Request):
                 access.logout(q, sid)
         else:
             async with db_lock:
-                uid = access.user_of(q, sid)
+                # без пароля: аккаунт устройства создаётся сам (для старта и кодов)
+                uid = access.user_of(q, sid) or (access.quick_user(q, sid, mac, norm_fp(body.get("fp")))
+                                                 if action in ("start", "redeem") else None)
             if not uid:
-                raise HTTPException(401, "Войдите в аккаунт")
+                raise HTTPException(401, "Подключитесь к сети «Assalom Wi-Fi»")
             if action in ("start", "relogon"):
                 if not act_lim.ok(sid):
                     raise HTTPException(429, "Слишком часто")

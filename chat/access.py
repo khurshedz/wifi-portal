@@ -20,7 +20,7 @@ import re
 import secrets
 import time
 
-FREE_SEC = int(os.environ.get("FREE_MINUTES", "30")) * 60
+FREE_SEC = int(os.environ.get("FREE_MINUTES", "5")) * 60
 DEVICE_LIMIT = int(os.environ.get("DEVICE_LIMIT", "2"))
 REG_COOLDOWN = 7 * 86400
 TZ_SHIFT = 5 * 3600  # Душанбе, UTC+5 — граница суток для бесплатных минут
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   tok_user TEXT, tok_pw TEXT, granted REAL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS free_use(key TEXT, day TEXT, used INTEGER, PRIMARY KEY(key, day));
 CREATE TABLE IF NOT EXISTS reg_marks(key TEXT PRIMARY KEY, ts REAL);
+CREATE TABLE IF NOT EXISTS dev_users(key TEXT PRIMARY KEY, user_id INTEGER);
 CREATE TABLE IF NOT EXISTS codes(code TEXT PRIMARY KEY, minutes INTEGER, created REAL, used_by INTEGER, used_ts REAL);
 CREATE TABLE IF NOT EXISTS access_log(ts REAL, user_id INTEGER, mac TEXT, event TEXT, secs INTEGER);
 """
@@ -115,6 +116,33 @@ def register(q, sid: str, mac: str | None, fp: str | None, login: str, pw: str) 
     for k in keys:
         q("INSERT OR REPLACE INTO reg_marks VALUES(?,?)", (k, now))
     bind_sid(q, sid, uid)
+    return uid
+
+
+def device_user(q, mac: str | None, fp: str | None) -> int | None:
+    for k in (["mac:" + mac] if mac else []) + (["fp:" + fp] if fp else []):
+        row = q("SELECT user_id FROM dev_users WHERE key=?", (k,))
+        if row:
+            return row[0][0]
+    return None
+
+
+def quick_user(q, sid: str, mac: str | None, fp: str | None) -> int:
+    """Идентификация сразу при заходе, без пароля, по всем признакам: cookie, MAC (подписан роутером),
+    отпечаток устройства. Совпал любой — это тот же пользователь (приоритет: cookie, MAC, отпечаток).
+    Новые признаки дописываются к найденному аккаунту, так что смена одного признака его не теряет."""
+    uid = user_of(q, sid) or device_user(q, mac, fp)
+    if not uid and not mac:
+        raise AccessError("Подключитесь к сети «Assalom Wi-Fi»")
+    if not uid:
+        login = "d" + secrets.token_hex(4)
+        q("INSERT INTO users(login,pw,created,by) VALUES(?,?,?,?)", (login, hash_pw(secrets.token_urlsafe(16)), time.time(), "auto"))
+        uid = q("SELECT id FROM users WHERE login=?", (login,))[0][0]
+        log(q, uid, mac, "create:auto")
+    for k in (["mac:" + mac] if mac else []) + (["fp:" + fp] if fp else []):
+        q("INSERT OR IGNORE INTO dev_users VALUES(?,?)", (k, uid))  # признак уже чей-то — не перехватываем
+    if not user_of(q, sid):
+        bind_sid(q, sid, uid)
     return uid
 
 
@@ -322,9 +350,15 @@ def redeem(q, uid: int, code: str) -> int:
 
 # ---------- состояние для страницы ----------
 def state(q, sid: str, mac: str | None, fp: str | None) -> dict:
-    uid = user_of(q, sid)
+    uid = None
+    try:
+        uid = quick_user(q, sid, mac, fp)  # аккаунт определяется/создаётся сразу при заходе
+    except AccessError:
+        pass
     d = {"logged": bool(uid), "device_ok": bool(mac), "free_total": FREE_SEC // 60}
     if not uid:
+        d.update(balance=0, active=None,
+                 free_left=free_left(q, [f"mac:{mac}", f"sid:{sid}"] + ([f"fp:{fp}"] if fp else [])) if mac else None)
         return d
     login, balance, blocked = q("SELECT login, balance, blocked FROM users WHERE id=?", (uid,))[0]
     s = active(q, uid)

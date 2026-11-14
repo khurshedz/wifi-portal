@@ -139,11 +139,11 @@ def test_radius_only_for_token_mac_and_chunk_not_refunded(q):
     tu, tp = access.relogon(q, u, M1)
     assert access.radius_auth(q, tu, tp, M2, 3600, T0 + 1) is None      # чужой MAC
     assert access.radius_auth(q, tu, "x" * 16, M1, 3600, T0 + 1) is None  # чужой пароль
-    secs, mode = access.radius_auth(q, tu, tp, M1, 600, T0 + 1)          # кусок 10 мин
-    assert secs == 600 and mode == "free"
-    access.stop(q, u, "user", T0 + 60)  # остановил через минуту: выданные роутеру 10 мин не возвращаются
+    secs, mode = access.radius_auth(q, tu, tp, M1, 120, T0 + 1)          # кусок 2 мин
+    assert secs == 120 and mode == "free"
+    access.stop(q, u, "user", T0 + 60)  # остановил через минуту: выданные роутеру 2 мин не возвращаются
     left = access.free_left(q, access.free_keys(u, M1, FP1, "s1"), T0 + 61)
-    assert left == access.FREE_SEC - 601
+    assert left == access.FREE_SEC - 121
 
 
 def test_relogon_only_on_own_device(q):
@@ -151,3 +151,15 @@ def test_relogon_only_on_own_device(q):
     access.start(q, u, "s1", M1, FP1, "free", T0)
     with pytest.raises(AccessError):
         access.relogon(q, u, M2)
+
+
+def test_identify_by_any_known_signal(q):
+    a = access.quick_user(q, "sidA", M1, FP1)
+    assert access.quick_user(q, "sidB", M1, FP2) == a      # новый браузер, тот же MAC
+    assert access.quick_user(q, "sidC", M2, FP1) == a      # новый (случайный) MAC, тот же отпечаток
+    assert access.quick_user(q, "sidA", M3, None) == a     # та же cookie
+    assert access.quick_user(q, "sidD", M3, None) == a     # M3 уже дописан к аккаунту
+    b = access.quick_user(q, "sidE", "AA-AA-AA-AA-AA-09", "c" * 64)
+    assert b != a                                          # совсем новое устройство — новый аккаунт
+    with pytest.raises(AccessError):
+        access.quick_user(q, "sidF", None, "d" * 64)       # не из Wi-Fi и ничего не совпало
