@@ -1,5 +1,6 @@
 # секреты и локальные данные — не публиковать
 router_backup/
+docs/wifi-plan/
 .env
 *.env
 mygh.txt

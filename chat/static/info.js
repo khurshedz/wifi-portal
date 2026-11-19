@@ -418,6 +418,70 @@
     $("news-text").textContent = text;
     box.hidden = false;
   };
+  // реклама: свои объявления (из Telegram, /ad) или «место для вашей рекламы» с примерами
+  const AD_SAMPLES = [
+    ["💻", "Купить 1С:Бухгалтерия", "Установка, настройка под Таджикистан, обучение бухгалтера. Выезд в офис."],
+    ["📱", "Ремонт телефонов за 1 час", "Замена экрана и батареи, прошивка. Гарантия на работу."],
+    ["🍽", "Плов и самса с доставкой", "Горячее к обеду — в офис и домой по Турсунзаде."],
+    ["🎓", "Курсы компьютера и английского", "Группы для детей и взрослых, вечером и в выходные."],
+    ["🏠", "Сдаётся помещение под магазин", "Центр, рядом с базаром. Вода, свет, охрана."],
+  ];
+  let adTimer = null, adItems = [], adIdx = 0, adKey = "";
+  const adEl = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+  const isPhone = (c) => /^\+?[\d\s()-]{6,20}$/.test(c || "");
+  const showAd = (i) => {
+    adIdx = (i + adItems.length) % adItems.length;
+    const a = adItems[adIdx], body = $("ad-body");
+    const box = adEl("div", "ad-text");
+    if (a.sample) {
+      box.append(adEl("b", "", a.title), document.createTextNode(a.text));
+    } else {
+      box.append(document.createTextNode(a.text));
+      if (a.contact) {
+        box.append(document.createElement("br"));
+        if (isPhone(a.contact)) {
+          const call = adEl("a", "ad-call", "📞 " + a.contact);
+          call.href = "tel:" + a.contact.replace(/[^\d+]/g, "");
+          call.addEventListener("click", () => {
+            fetch(BASE + "/api/ad/click", { method: "POST", credentials: "same-origin",
+              headers: { "Content-Type": "application/json", "X-Requested-With": "chat" }, body: JSON.stringify({ id: a.id }) }).catch(() => {});
+          });
+          box.append(call);
+        } else box.append(adEl("span", "muted", a.contact));
+      }
+    }
+    body.replaceChildren(adEl("div", "ad-ico", a.ico || "📣"), box);
+    body.classList.toggle("ad-sample", !!a.sample);
+    [...$("ad-dots").children].forEach((d, k) => d.classList.toggle("on", k === adIdx));
+  };
+  const renderAds = (ads, reach) => {
+    const own = (ads || []).length > 0;
+    const key = JSON.stringify([ads, own ? 0 : reach]);
+    if (key === adKey) return;  // те же данные — не сбиваем карусель
+    adKey = key;
+    adItems = own ? ads.map((a) => ({ ...a, ico: "📣" }))
+                  : AD_SAMPLES.map(([ico, title, text]) => ({ sample: true, ico, title, text }));
+    $("ad-title").textContent = own ? "📣 Объявление" : "📣 Место для вашей рекламы";
+    $("ad-tag").textContent = own ? "реклама" : "пример";
+    $("ad-want").textContent = own ? "Здесь может быть ваша реклама" :
+      (reach >= 10 ? `Разместить рекламу · её увидят ${reach} устройств за неделю` : "Разместить свою рекламу");
+    $("ad-dots").replaceChildren(...adItems.map((_, i) => { const d = document.createElement("span"); d.addEventListener("click", () => { showAd(i); restart(); }); return d; }));
+    $("ad-dots").hidden = adItems.length < 2;
+    const restart = () => { clearInterval(adTimer); if (adItems.length > 1) adTimer = setInterval(() => showAd(adIdx + 1), 7000); };
+    showAd(0); restart();
+    $("card-ad").hidden = false;
+  };
+  $("ad-want").addEventListener("click", () => {
+    const tab = document.querySelector('#tabs [data-t="admin"]');
+    if (tab) tab.click();
+    const t = $("text");
+    if (t) {
+      t.value = "Здравствуйте! Хочу разместить рекламу на странице Wi-Fi: ";
+      t.scrollIntoView({ behavior: "smooth", block: "center" });
+      setTimeout(() => { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }, 400);
+    }
+  });
+
   const renderOnline = (n) => {
     if (!n) { $("online").textContent = ""; return; }
     const w = n % 10 === 1 && n % 100 !== 11 ? "гость" : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) ? "гостя" : "гостей";
@@ -459,6 +523,7 @@
       renderAir(d.air);
       renderMag(d.magnetic);
       renderNews(d.news);
+      renderAds(d.ads, d.ad_reach);
       renderQuran(d.quran);
       otdData.hijri = d.hijri || null;
       renderWiki(d.wiki);

@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 
 import access
+import backup
 import info
 import visits
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -69,6 +70,11 @@ CREATE TABLE IF NOT EXISTS room(
   deleted INTEGER DEFAULT 0, tg_id INTEGER);
 CREATE TABLE IF NOT EXISTS room_names(sid TEXT PRIMARY KEY, display TEXT UNIQUE COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS bans(sid TEXT PRIMARY KEY, ts REAL);
+-- один человек = один гость: признаки (sid:/mac:/user:/fp:) -> главный sid этого гостя
+CREATE TABLE IF NOT EXISTS guest_keys(key TEXT PRIMARY KEY, sid TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS ads(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, contact TEXT, created REAL, until REAL, off INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS ad_stats(ad_id INTEGER, sid TEXT, day TEXT, click INTEGER DEFAULT 0, PRIMARY KEY(ad_id, sid, day));
 """)
 db.executescript(visits.SCHEMA)
 db.executescript(access.SCHEMA)
@@ -120,12 +126,95 @@ async def tg(method: str, **params):
     return data["result"]
 
 
-def topic_title(num: int, name: str | None) -> str:
-    return f"Анон{num}" + (f" · {name}" if name else "")
+async def tg_service(key: str, getter, **params):
+    """Сообщение в служебную тему (её номер лежит в kv[key]). Если тему удалили в Telegram — завести новую."""
+    try:
+        return await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=await getter(), **params)
+    except RuntimeError as e:
+        if "thread not found" not in str(e).lower():
+            raise
+        q("DELETE FROM kv WHERE k=?", (key,))
+        return await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=await getter(), **params)
+
+
+# ---------- посетитель: один человек = один гость = одна тема ----------
+# Человека узнаём по признакам: cookie (sid), MAC из подписанного редиректа роутера, аккаунт с паролем,
+# отпечаток браузера (только когда MAC неизвестен). Совпал признак другого гостя — это тот же человек:
+# гости объединяются, всё о нём пишется в одну тему.
+
+def canon(sid: str) -> str:
+    """Главный sid человека (все его браузеры/cookie сводятся к одному)."""
+    row = q("SELECT sid FROM guest_keys WHERE key=?", ("sid:" + sid,))
+    return row[0][0] if row else sid
+
+
+def sids_of(g: str) -> list[str]:
+    return [g] + [r[0][4:] for r in q("SELECT key FROM guest_keys WHERE sid=? AND key LIKE 'sid:%'", (g,))]
+
+
+def person_model(g: str) -> str:
+    ss = sids_of(g)
+    r = q(f"SELECT brand, model, kind FROM visits WHERE sid IN ({','.join('?' * len(ss))}) "
+          "AND kind<>'бот' ORDER BY id DESC LIMIT 1", ss)
+    if not r:
+        return ""
+    brand, model, kind = r[0]
+    return (model if model and brand and model.startswith(brand) else " ".join(x for x in (brand, model) if x)) or kind or ""
+
+
+def guest_row(g: str):
+    r = q("SELECT num, topic_id, name, created FROM guests WHERE sid=?", (g,))
+    return r[0] if r else None
+
+
+def link(sid: str, key: str, how: str) -> str:
+    """Признак key принадлежит человеку с этим sid. Если признак уже чей-то — это один человек."""
+    me = canon(sid)
+    row = q("SELECT sid FROM guest_keys WHERE key=?", (key,))
+    if not row:
+        q("INSERT INTO guest_keys VALUES(?,?,?)", (key, me, time.time()))
+        return me
+    other = canon(row[0][0])
+    return me if other == me else merge(me, other, how)
+
+
+def merge(a: str, b: str, how: str) -> str:
+    """Объединить двух гостей. Остаётся тот, у кого раньше появилась тема/номер (по умолчанию b — владелец признака)."""
+    ga, gb = guest_row(a), guest_row(b)
+    keep, drop = (a, b) if ga and (not gb or ga[3] < gb[3]) else (b, a)
+    gk, gd = guest_row(keep), guest_row(drop)
+    q("UPDATE guest_keys SET sid=? WHERE sid=?", (keep, drop))
+    q("INSERT OR REPLACE INTO guest_keys VALUES(?,?,?)", ("sid:" + drop, keep, time.time()))
+    if gd:  # у обоих была своя тема: история переезжает, старая тема закрывается
+        q("UPDATE messages SET num=? WHERE num=?", (gk[0], gd[0]))
+        if gd[2] and not gk[2]:
+            q("UPDATE guests SET name=? WHERE sid=?", (gd[2], keep))
+        if q("SELECT 1 FROM bans WHERE sid=?", (drop,)):
+            q("INSERT OR REPLACE INTO bans VALUES(?,?)", (keep, time.time()))
+        q("DELETE FROM guests WHERE sid=?", (drop,))
+        say(keep, f"🔗 Это тот же человек, что Анон{gd[0]} (совпал {how}). Его тема закрыта, дальше всё здесь.")
+        if gd[1]:
+            spawn(close_topic(gd[1], gk[0]))
+    elif gk:
+        say(keep, f"🔗 Ещё один браузер/вход того же человека (узнан: {how})")
+    return keep
+
+
+async def close_topic(topic_id: int, num: int) -> None:
+    try:
+        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=topic_id,
+                 text=f"➡️ Это тот же человек, что Анон{num}. Дальше всё о нём — в его теме.")
+        await tg("closeForumTopic", chat_id=TG_CHAT_ID, message_thread_id=topic_id)
+    except Exception as e:
+        print("close topic error:", e)
+
+
+def topic_title(num: int, name: str | None, model: str = "") -> str:
+    return (f"Анон{num}" + (f" · {name}" if name else (f" · {model}" if model else "")))[:128]
 
 
 async def ensure_topic(sid: str) -> tuple[int, int]:
-    """Возвращает (num, topic_id), создавая гостя/тему при необходимости."""
+    """Возвращает (num, topic_id), создавая гостя/тему при необходимости. sid — уже главный (canon)."""
     async with db_lock:
         row = q("SELECT num, topic_id, name FROM guests WHERE sid=?", (sid,))
         if row and row[0][1]:
@@ -138,9 +227,84 @@ async def ensure_topic(sid: str) -> tuple[int, int]:
             name = None
         else:
             num, name = row[0][0], row[0][2]
-        topic = await tg("createForumTopic", chat_id=TG_CHAT_ID, name=topic_title(num, name))
+        topic = await tg("createForumTopic", chat_id=TG_CHAT_ID, name=topic_title(num, name, person_model(sid)))
         q("UPDATE guests SET topic_id=? WHERE sid=?", (topic["message_thread_id"], sid))
         return num, topic["message_thread_id"]
+
+
+async def topic_send(g: str, text: str, **params) -> int:
+    """Сообщение в тему гостя; тему удалили в Telegram — создать заново. Возвращает num гостя."""
+    num, topic_id = await ensure_topic(g)
+    try:
+        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=topic_id, text=text, **params)
+    except RuntimeError as e:
+        if "thread not found" not in str(e).lower():
+            raise
+        q("UPDATE guests SET topic_id=NULL WHERE sid=?", (g,))
+        num, topic_id = await ensure_topic(g)
+        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=topic_id, text=text, **params)
+    return num
+
+
+# события о госте (заходы, имя, интернет, роутер) идут в его тему по очереди, в порядке появления
+events: asyncio.Queue | None = None
+guest_lim = Limiter(30, 60)  # не больше 30 событий в минуту на одного гостя
+_bg: set = set()
+
+
+def spawn(coro) -> None:
+    t = asyncio.create_task(coro)
+    _bg.add(t)
+    t.add_done_callback(_bg.discard)
+
+
+def say(sid: str | None, text: str, loud: bool = False) -> None:
+    """Записать событие в тему гостя (не ждёт Telegram)."""
+    if sid and events is not None and events.qsize() < 1000:
+        events.put_nowait((sid, text, loud))
+
+
+async def deliver(sid: str, text: str, loud: bool) -> None:
+    g = canon(sid)  # мог объединиться, пока событие ждало очереди
+    if not guest_lim.ok(g):
+        return
+    await topic_send(g, text, disable_notification=not loud, link_preview_options={"is_disabled": True})
+
+
+async def events_loop():
+    while True:
+        sid, text, loud = await events.get()
+        try:
+            await deliver(sid, text, loud)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print("guest event error:", e)
+
+
+async def drain_events() -> None:
+    """Для тестов: выполнить всё, что в очереди."""
+    while events is not None and not events.empty():
+        await deliver(*events.get_nowait())
+
+
+async def set_name(g: str, name: str | None) -> None:
+    """Гость ввёл/сменил имя (в личном или общем чате): тема переименовывается, событие в теме."""
+    row = guest_row(g)
+    if not row or not name or name == row[2]:
+        return
+    q("UPDATE guests SET name=? WHERE sid=?", (name, g))
+    say(g, f"✏️ Имя: {'«' + row[2] + '»' if row[2] else 'не было'} → «{name}»")
+    if row[1]:
+        try:
+            await tg("editForumTopic", chat_id=TG_CHAT_ID, message_thread_id=row[1], name=topic_title(row[0], name))
+        except Exception as e:
+            print("rename error:", e)
+
+
+def guest_of_mac(mac: str) -> str | None:
+    row = q("SELECT sid FROM guest_keys WHERE key=?", ("mac:" + mac,)) or q("SELECT sid FROM devices WHERE mac=?", (mac,))
+    return canon(row[0][0]) if row else None
 
 
 NEWS_MAX = 500
@@ -212,12 +376,12 @@ async def moderate(m: dict, text: str) -> None:
         elif row[0][0] == "admin":
             reply = "Это сообщение админа"
         elif cmd == "ban":
-            q("INSERT OR REPLACE INTO bans VALUES(?,?)", (row[0][0], time.time()))
+            q("INSERT OR REPLACE INTO bans VALUES(?,?)", (canon(row[0][0]), time.time()))
             n = q("SELECT COUNT(*) FROM room WHERE sid=? AND deleted=0", (row[0][0],))[0][0]
             q("UPDATE room SET deleted=1 WHERE sid=?", (row[0][0],))
             reply = f"🚫 {row[0][1]} забанен, удалено сообщений: {n}"
         elif cmd == "unban":
-            q("DELETE FROM bans WHERE sid=?", (row[0][0],))
+            q("DELETE FROM bans WHERE sid=?", (canon(row[0][0]),))
             reply = f"✅ {row[0][1]} разбанен"
     try:
         await tg("sendMessage", chat_id=TG_CHAT_ID, text=reply, reply_to_message_id=m["message_id"],
@@ -227,37 +391,32 @@ async def moderate(m: dict, text: str) -> None:
 
 
 # ---------- журнал посещений ----------
-visit_notify = Limiter(20, 60)  # не больше 20 уведомлений в минуту в тему «Посетители»
-
-
-async def visits_topic() -> int:
-    row = q("SELECT v FROM kv WHERE k='visits_topic'")
-    if row:
-        return int(row[0][0])
-    async with db_lock:
-        row = q("SELECT v FROM kv WHERE k='visits_topic'")
-        if row:
-            return int(row[0][0])
-        t = await tg("createForumTopic", chat_id=TG_CHAT_ID, name="📊 Посетители")
-        q("INSERT OR REPLACE INTO kv VALUES('visits_topic',?)", (str(t["message_thread_id"]),))
-        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=t["message_thread_id"], text=(
-            "Сюда пишется каждый новый заход на страницу (повтор в течение 30 мин — та же запись).\n"
-            "/visits — последние 15 заходов (/visits 40 — больше)\n/stats — сводка: сколько, марки, браузеры\n"
-            "/who a1b2c3 — все заходы устройства с этим 🆔 (+ полный User-Agent)"))
-        return t["message_thread_id"]
+visit_notify = Limiter(20, 60)  # всего уведомлений о заходах в минуту
 
 
 async def notify_visit(vid: int) -> None:
-    await asyncio.sleep(6)  # ждём уточнения от страницы (модель, экран)
+    """Заход — в тему этого человека (тема создаётся сразу). Боты и превью ссылок (страница без JS) — только в журнал."""
     try:
-        r = visits.rows(q, "v.id=? AND v.sent=0", (vid,), 1)
-        if not r or not visit_notify.ok("all"):
+        for wait in (6, 20):  # ждём уточнения от страницы (модель, экран)
+            await asyncio.sleep(wait)
+            r = visits.rows(q, "v.id=? AND v.sent=0", (vid,), 1)
+            if not r or r[0]["kind"] == "бот":
+                return
+            if r[0]["screen"] or r[0]["mac"]:
+                break
+        else:
+            return
+        r = r[0]
+        if not visit_notify.ok("all"):
             return
         q("UPDATE visits SET sent=1 WHERE id=?", (vid,))
-        before = q("SELECT COUNT(*) FROM visits WHERE sid=(SELECT sid FROM visits WHERE id=?) AND id<?", (vid, vid))[0][0]
-        head = "🆕 Новое устройство" if not before else f"🔁 Снова зашёл (визит {before + 1})"
-        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=await visits_topic(),
-                 text=head + "\n" + visits.line(r[0]), disable_notification=True)
+        g = canon(q("SELECT sid FROM visits WHERE id=?", (vid,))[0][0])
+        ss = sids_of(g)
+        before = q(f"SELECT COUNT(*) FROM visits WHERE sid IN ({','.join('?' * len(ss))}) AND id<?", (*ss, vid))[0][0]
+        gr = guest_row(g)
+        r["num"], r["name"] = (gr[0], gr[2]) if gr else (None, None)
+        head = "🆕 Новый посетитель" if not before else f"🔁 Снова зашёл (визит {before + 1})"
+        say(g, head + "\n" + visits.line(r), loud=True)
     except Exception as e:
         print("visit notify error:", e)
 
@@ -301,6 +460,74 @@ async def reply(m: dict, text: str) -> None:
 
 def fmt_min(sec: int) -> str:
     return f"{sec // 3600} ч {sec % 3600 // 60} мин" if sec >= 3600 else f"{sec // 60} мин"
+
+
+# ---------- реклама на странице ----------
+AD_TEXT_MAX, AD_CONTACT_MAX = 200, 40
+AD_HELP = ("Реклама на странице:\n/ad — список и статистика\n"
+           "/ad add 30 Текст | +992 900 00 00 00 — разместить на 30 дней (контакт после | необязателен)\n"
+           "/ad del 3 — снять объявление #3\n"
+           "Пока своих объявлений нет, на странице видно «Место для вашей рекламы» с примерами.")
+
+
+def ad_day(ts: float | None = None) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime((ts or time.time()) + 18000))  # день по Душанбе
+
+
+def ad_reach(days: int = 7) -> int:
+    """Сколько разных устройств открывали страницу — эту цифру показываем рекламодателю."""
+    return q("SELECT COUNT(DISTINCT COALESCE(NULLIF(dev,''), sid)) FROM visits WHERE last>?", (time.time() - days * 86400,))[0][0]
+
+
+def ads_active(now: float | None = None) -> list:
+    return q("SELECT id, text, contact FROM ads WHERE off=0 AND until>? ORDER BY id", (now or time.time(),))
+
+
+def ad_list() -> str:
+    rows = q("SELECT id, text, contact, until, off FROM ads ORDER BY id DESC LIMIT 15")
+    week = ad_day(time.time() - 6 * 86400)
+    out = [f"📣 Реклама · охват страницы: {ad_reach()} устройств за 7 дней"]
+    for i, t, c, until, off in rows:
+        shows, clicks = q("SELECT COUNT(*), COALESCE(SUM(click),0) FROM ad_stats WHERE ad_id=?", (i,))[0]
+        wk = q("SELECT COUNT(*) FROM ad_stats WHERE ad_id=? AND day>=?", (i, week))[0][0]
+        state = "снято" if off else ("до " + time.strftime("%d.%m", time.gmtime(until + 18000)) if until > time.time() else "истекло")
+        out.append(f"#{i} · {state} · показов {shows} (за 7 дн. {wk}) · нажатий {clicks}\n{t}" + (f" | {c}" if c else ""))
+    if len(out) == 1:
+        out.append("Объявлений нет — на странице «Место для вашей рекламы».")
+    return "\n\n".join(out) + "\n\n" + AD_HELP.split("\n", 1)[1]
+
+
+async def ad_cmd(m: dict, text: str) -> None:
+    parts = text.split(maxsplit=2)
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    try:
+        async with db_lock:
+            if sub == "add" and len(parts) > 2:
+                rest = parts[2]
+                days = 30
+                mm = re.match(r"^(\d{1,3})\s+(.+)$", rest, re.S)
+                if mm:
+                    days, rest = max(1, int(mm.group(1))), mm.group(2)
+                body, _, contact = rest.partition("|")
+                body, contact = clean(body, AD_TEXT_MAX), clean(contact, AD_CONTACT_MAX)
+                if len(body) < 3:
+                    raise access.AccessError("Нужен текст объявления")
+                now = time.time()
+                q("INSERT INTO ads(text, contact, created, until) VALUES(?,?,?,?)", (body, contact, now, now + days * 86400))
+                out = f"✅ Объявление #{q('SELECT MAX(id) FROM ads')[0][0]} на {days} дн. — уже на странице"
+            elif sub == "del" and len(parts) > 2 and parts[2].strip().lstrip("#").isdigit():
+                n = int(parts[2].strip().lstrip("#"))
+                if not q("SELECT 1 FROM ads WHERE id=?", (n,)):
+                    raise access.AccessError("Нет объявления #" + str(n))
+                q("UPDATE ads SET off=1 WHERE id=?", (n,))
+                out = f"✅ Объявление #{n} снято (статистика сохранена)"
+            elif sub in ("", "list", "stats"):
+                out = ad_list()
+            else:
+                out = AD_HELP
+    except access.AccessError as e:
+        out = "⚠️ " + str(e)
+    await reply(m, out)
 
 
 async def access_cmd(m: dict, text: str) -> None:
@@ -370,7 +597,7 @@ async def access_cmd(m: dict, text: str) -> None:
                 out = ("Команды доступа:\n/adduser логин [минуты] — создать (пароль придумает бот)\n"
                        "/addtime логин минуты — добавить (или -минуты)\n/user логин — карточка и журнал\n"
                        "/kick логин — отключить сейчас\n/block, /unblock логин\n/resetdev логин — сбросить привязку устройств\n"
-                       "/codes минуты [кол-во] — коды пополнения\n/online — кто в сети\n/dash — ссылка на панель (кто в сети, трафик, история)")
+                       "/codes минуты [кол-во] — коды пополнения\n/online — кто в сети\n/dash — ссылка на панель (кто в сети, трафик, история)\n/ad — реклама на странице")
     except access.AccessError as e:
         out = "⚠️ " + str(e)
     await reply(m, out)
@@ -381,8 +608,10 @@ async def access_loop():
     while True:
         try:
             async with db_lock:
-                for uid, _ in access.expired(q):
+                for uid, mac in access.expired(q):
+                    s = access.active(q, uid)
                     access.stop(q, uid, "expired")
+                    say(guest_of_mac(mac) or (s and s[1]), "⌛ Время интернета закончилось")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -444,6 +673,9 @@ async def poll_telegram():
                 if m.get("from", {}).get("is_bot"):
                     continue
                 text = m.get("text") or m.get("caption")
+                if text and re.match(r"^/ad(@\w+)?(\s|$)", text):
+                    await ad_cmd(m, text)
+                    continue
                 if text and re.match(r"^/news(@\w+)?(\s|$)", text):
                     await set_news(m, text)
                     continue
@@ -481,22 +713,93 @@ def cache_key() -> str:
     return hmac.new(UAM_SECRET.encode(), b"cache-export", hashlib.sha256).hexdigest()
 
 
-async def take_over_cache():
+async def take_over_cache() -> int:
     """При деплое старая версия ещё отвечает по публичному адресу — забираем у неё готовые данные.
-    Внешние сервисы тогда опрашиваются только в HH:00, а не при каждом деплое."""
+    Внешние сервисы тогда опрашиваются только в HH:00, а не при каждом деплое.
+    Возвращает число строк базы (0 — старой версии нет: сервер проснулся после сна)."""
     if not (UAM_SECRET and PORTAL_URL):
-        return
-    await asyncio.sleep(1)
+        return 0
     try:
         r = await http.get(PORTAL_URL.rstrip("/") + "/api/cache-export",
-                           headers={"X-Cache-Key": cache_key()}, timeout=25)
+                           headers={"X-Cache-Key": cache_key()}, timeout=6)
         if r.status_code == 200:
             d = r.json()
-            print("cache taken over:", info.import_state(d), "sources,", import_db(d.get("db")), "db rows")
-        else:
-            print("cache take-over: HTTP", r.status_code)
+            n = import_db(d.get("db"))
+            print("cache taken over:", info.import_state(d), "sources,", n, "db rows")
+            return n
+        print("cache take-over: HTTP", r.status_code)
     except Exception as e:
-        print("cache take-over failed:", type(e).__name__)  # обычный холодный старт: данные подтянет первый гость
+        print("cache take-over failed:", type(e).__name__)  # обычный холодный старт
+    return 0
+
+
+# ---------- резервная копия базы в Telegram (см. backup.py) ----------
+# По умолчанию включена только на Render: локальный запуск с тем же ботом не должен трогать боевую копию.
+BACKUP_ON = os.environ.get("TG_BACKUP", "1" if os.environ.get("RENDER") else "0") == "1"
+BACKUP_EVERY = 600
+bak: backup.TgBackup | None = None
+restore_tries = 0  # >0 — копию не удалось прочитать из-за сбоя: пока не сохраняем поверх неё
+
+
+def db_empty() -> bool:
+    return not q("SELECT 1 FROM kv LIMIT 1") and not q("SELECT 1 FROM guests LIMIT 1")
+
+
+def backup_state() -> dict:
+    d = info.export_state()
+    d.pop("images", None)             # картинки тяжёлые и живут час — после сна скачаются заново
+    d.get("cache", {}).pop("wiki", None)  # список фото без самих картинок не нужен
+    d["db"] = export_db()
+    return d
+
+
+async def restore_backup() -> bool:
+    """True — вопрос закрыт (восстановили или копии нет), False — сбой, надо повторить."""
+    try:
+        d = await asyncio.wait_for(bak.load(), 30)
+    except backup.NoBackup as e:
+        print("backup: nothing to restore:", e)
+        return True
+    except Exception as e:
+        print("backup: restore failed:", type(e).__name__, e)
+        return False
+    print("backup restored:", info.import_state(d), "sources,", import_db(d.get("db")), "db rows")
+    return True
+
+
+async def load_state() -> None:
+    """Выполняется до приёма запросов: первый гость уже видит старые темы, балансы и номера."""
+    global restore_tries
+    took = await take_over_cache()
+    if not bak or took or not db_empty():
+        return
+    for _ in range(2):
+        if await restore_backup():
+            return
+        await asyncio.sleep(2)
+    restore_tries = 1
+
+
+async def save_backup() -> None:
+    try:
+        if await bak.save(backup_state()):
+            print("backup saved")
+    except Exception as e:
+        print("backup: save failed:", type(e).__name__, e)
+
+
+async def backup_loop():
+    global restore_tries
+    await asyncio.sleep(120)
+    while True:
+        if restore_tries:  # копия есть, но при старте не прочиталась: пробуем ещё, поверх неё не пишем
+            if await restore_backup() or restore_tries >= 5:
+                restore_tries = 0
+            else:
+                restore_tries += 1
+        if not restore_tries:
+            await save_backup()
+        await asyncio.sleep(BACKUP_EVERY)
 
 
 async def refresh_hourly():
@@ -514,16 +817,29 @@ async def refresh_hourly():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global http
+    global http, bak, events
     http = httpx.AsyncClient()
+    events = asyncio.Queue()
+    if BACKUP_ON:
+        bak = backup.TgBackup(http, TG_TOKEN, TG_CHAT_ID)
+    await load_state()  # данные предыдущей версии или резервной копии — до первого запроса
     task = asyncio.create_task(poll_telegram())
-    asyncio.create_task(take_over_cache())  # кеш от предыдущей версии — без лишних запросов к сервисам
     hourly = asyncio.create_task(refresh_hourly())
     acc = asyncio.create_task(access_loop())
+    bk = asyncio.create_task(backup_loop()) if bak else None
+    ev = asyncio.create_task(events_loop())
     yield
+    ev.cancel()
     task.cancel()
     hourly.cancel()
     acc.cancel()
+    if bk:
+        bk.cancel()
+        if not restore_tries:  # перед сном/перезапуском — свежая копия
+            try:
+                await asyncio.wait_for(save_backup(), 20)
+            except Exception as e:
+                print("backup: final save failed:", type(e).__name__)
     await http.aclose()
 
 
@@ -661,10 +977,14 @@ async def index(request: Request):
         # одно устройство = один гость, даже в другом окне/браузере
         row = q("SELECT sid FROM devices WHERE mac=?", (mac,))
         if row:
-            sid = row[0][0]
+            dsid = row[0][0]
         else:
-            sid = sid or secrets.token_urlsafe(32)
-            q("INSERT INTO devices(mac,sid,seen) VALUES(?,?,?)", (mac, sid, time.time()))
+            dsid = sid or secrets.token_urlsafe(32)
+            q("INSERT INTO devices(mac,sid,seen) VALUES(?,?,?)", (mac, dsid, time.time()))
+        link(dsid, "mac:" + mac, "MAC телефона от роутера")
+        if sid and sid != dsid:  # у браузера была своя cookie — это тот же человек
+            link(sid, "mac:" + mac, "MAC телефона от роутера")
+        sid = dsid
         q("UPDATE devices SET seen=? WHERE mac=?", (time.time(), mac))
         save_chilli_ctx(request, mac)
         q("INSERT OR REPLACE INTO kv VALUES('wifi_ip',?)", (client_ip(request),))  # запомнить IP точки
@@ -728,7 +1048,31 @@ async def get_info(request: Request):
     news = q("SELECT v FROM kv WHERE k='news'")
     data["news"] = news[0][0] if news else None
     data["online"] = ONLINE_BASE + online_count()
+    ads = ads_active()
+    sid, day = get_sid(request), ad_day()
+    for a in ads:  # показ = одно устройство один раз в день
+        q("INSERT OR IGNORE INTO ad_stats(ad_id, sid, day) VALUES(?,?,?)", (a[0], sid, day))
+    data["ads"] = [{"id": i, "text": t, "contact": c} for i, t, c in ads]
+    data["ad_reach"] = ad_reach() if not ads else 0
     return data
+
+
+class AdClickIn(BaseModel):
+    id: int = Field(ge=1, le=10**9)
+
+
+ad_lim = Limiter(20, 60)
+
+
+@app.post("/api/ad/click")
+async def ad_click(body: AdClickIn, request: Request):
+    require_page(request)
+    sid = get_sid(request)
+    if ad_lim.ok(sid) and q("SELECT 1 FROM ads WHERE id=? AND off=0", (body.id,)):
+        day = ad_day()
+        q("INSERT OR IGNORE INTO ad_stats(ad_id, sid, day) VALUES(?,?,?)", (body.id, sid, day))
+        q("UPDATE ad_stats SET click=1 WHERE ad_id=? AND sid=? AND day=?", (body.id, sid, day))
+    return {"ok": True}
 
 
 @app.get("/api/diag-ip")
@@ -744,11 +1088,12 @@ async def diag_ip(request: Request):
 
 
 DB_EXPORT = {  # таблица -> сколько последних строк передавать новой версии
-    "guests": 100000, "devices": 100000, "bans": 100000, "room_names": 100000, "kv": 1000,
+    "guests": 100000, "guest_keys": 1000000, "devices": 100000, "bans": 100000, "room_names": 100000, "kv": 1000,
     "room": 1000, "messages": 5000, "visits": 20000,
     # доступ в интернет: аккаунты и балансы обязаны пережить деплой
     "users": 1000000, "user_sids": 1000000, "user_devices": 1000000, "sessions": 100000,
     "free_use": 200000, "reg_marks": 200000, "dev_users": 1000000, "codes": 1000000, "access_log": 50000, "chilli_ctx": 100000, "net_acct": 50000,
+    "ads": 1000, "ad_stats": 200000,
 }
 
 
@@ -758,13 +1103,17 @@ async def cache_export(request: Request):
     if not (UAM_SECRET and hmac.compare_digest(key, cache_key())):
         raise HTTPException(404)
     data = info.export_state()
+    data["db"] = export_db()
+    return data
+
+
+def export_db() -> dict:
     tables = {}
     for tbl, lim in DB_EXPORT.items():
         cur = db.execute(f"SELECT * FROM (SELECT rowid AS _r, * FROM {tbl} ORDER BY rowid DESC LIMIT ?) ORDER BY _r", (lim,))
         cols = [c[0] for c in cur.description][1:]
         tables[tbl] = {"cols": cols, "rows": [list(r[1:]) for r in cur.fetchall()]}
-    data["db"] = tables
-    return data
+    return tables
 
 
 def import_db(tables: dict) -> int:
@@ -816,7 +1165,7 @@ class SendIn(BaseModel):
 
 @app.get("/api/me")
 async def me(request: Request):
-    sid = require_sid(request)
+    sid = canon(require_sid(request))
     row = q("SELECT num, name FROM guests WHERE sid=?", (sid,))
     return {"num": row[0][0] if row else None, "name": row[0][1] if row else None}
 
@@ -831,25 +1180,13 @@ async def send(body: SendIn, request: Request):
     if not (per_guest_burst.ok(sid) and per_guest.ok(sid) and global_lim.ok("all")):
         raise HTTPException(429, "Слишком часто, подождите немного")
 
-    num, topic_id = await ensure_topic(sid)
-    old = q("SELECT name FROM guests WHERE sid=?", (sid,))[0][0]
-    if name != old and name is not None:
-        q("UPDATE guests SET name=? WHERE sid=?", (name, sid))
-        try:
-            await tg("editForumTopic", chat_id=TG_CHAT_ID, message_thread_id=topic_id,
-                     name=topic_title(num, name))
-        except Exception as e:
-            print("rename error:", e)
+    g = canon(sid)
+    await ensure_topic(g)
+    await set_name(g, name)
     try:
-        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=topic_id, text=text,
-                 link_preview_options={"is_disabled": True})
-    except RuntimeError as e:
-        if "thread not found" in str(e).lower():  # тему удалили в TG — создать заново
-            q("UPDATE guests SET topic_id=NULL WHERE sid=?", (sid,))
-            num, topic_id = await ensure_topic(sid)
-            await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=topic_id, text=text)
-        else:
-            raise HTTPException(502, "Не удалось отправить, попробуйте ещё раз")
+        num = await topic_send(g, "✉️ " + text)
+    except RuntimeError:
+        raise HTTPException(502, "Не удалось отправить, попробуйте ещё раз")
     q("INSERT INTO messages(num,out,text,ts) VALUES(?,0,?,?)", (num, text, time.time()))
     return {"ok": True, "num": num}
 
@@ -859,7 +1196,7 @@ async def messages(request: Request, after: int = 0):
     sid = require_sid(request)
     if len(online) < 10000:
         online[sid] = time.time()
-    row = q("SELECT num FROM guests WHERE sid=?", (sid,))
+    row = q("SELECT num FROM guests WHERE sid=?", (canon(sid),))
     if not row:
         return {"messages": []}
     rows = q("SELECT id, out, text, ts FROM messages WHERE num=? AND id>? ORDER BY id LIMIT 200",
@@ -895,10 +1232,11 @@ async def room_get(request: Request, after: int = 0):
 
 @app.post("/api/room")
 async def room_post(body: SendIn, request: Request):
-    sid = require_sid(request)
+    raw = require_sid(request)
+    sid = canon(raw)
     if q("SELECT 1 FROM bans WHERE sid=?", (sid,)):
         raise HTTPException(403, "Вам запрещено писать в общий чат")
-    if ROOM_WIFI_ONLY and not from_wifi(request, sid):
+    if ROOM_WIFI_ONLY and not from_wifi(request, raw):
         raise HTTPException(403, "Писать в общий чат можно только подключившись к Free Wifi")
     text = clean(body.text, ROOM_MAX)
     if not text:
@@ -908,17 +1246,18 @@ async def room_post(body: SendIn, request: Request):
     if not (room_burst.ok(sid) and room_guest.ok(sid) and room_ip.ok(client_ip(request)) and global_lim.ok("all")):
         raise HTTPException(429, "Не так быстро 🙂")
     num = guest_num(sid)
+    await set_name(sid, clean(body.name or "", MAX_NAME) or None)
     name = display_name(sid, num, clean(body.name or "", MAX_NAME) or None)
     text = censor(text)
     cur = db.execute("INSERT INTO room(sid,num,name,text,ts) VALUES(?,?,?,?,?)", (sid, num, name, text, time.time()))
     mid = cur.lastrowid
     q("DELETE FROM room WHERE id <= ?", (mid - ROOM_KEEP,))
     try:
-        topic = await room_topic()
-        await tg("sendMessage", chat_id=TG_CHAT_ID, message_thread_id=topic, text=f"#{mid} {name} (Анон{num}): {text}",
-                 link_preview_options={"is_disabled": True})
+        await tg_service("room_topic", room_topic, text=f"#{mid} {name} (Анон{num}): {text}",
+                         link_preview_options={"is_disabled": True})
     except Exception as e:
         print("room copy error:", e)
+    say(sid, f"💬 Написал в общий чат (#{mid}): {text}")
     return {"ok": True, "id": mid, "name": name}
 
 
@@ -968,11 +1307,41 @@ def acc_err(e: access.AccessError):
     return HTTPException(400, str(e))
 
 
+def link_fp(sid: str, fp: str | None, ua: str) -> None:
+    """Отпечаток браузера связывает людей, только когда MAC неизвестен (страницу открыли не через роутер)
+    и последний заход другого гостя был с точно таким же браузером. Одинаковые телефоны всё же могут совпасть."""
+    if not fp:
+        return
+    me, key = canon(sid), "fp:" + fp
+    row = q("SELECT sid FROM guest_keys WHERE key=?", (key,))
+    if not row:
+        q("INSERT INTO guest_keys VALUES(?,?,?)", (key, me, time.time()))
+        return
+    other = canon(row[0][0])
+    if other == me or sid_mac(sid) or q("SELECT 1 FROM guest_keys WHERE sid=? AND key LIKE 'mac:%'", (me,)):
+        return
+    ss = sids_of(other)
+    last = q(f"SELECT ua FROM visits WHERE sid IN ({','.join('?' * len(ss))}) ORDER BY id DESC LIMIT 1", ss)
+    if last and last[0][0] == ua[:400]:
+        merge(me, other, "отпечаток браузера — может ошибаться, если у двоих одинаковые телефоны")
+
+
 @app.get("/api/access")
 async def access_state(request: Request, fp: str = ""):
     sid = require_sid(request)
     async with db_lock:
+        link_fp(sid, norm_fp(fp), request.headers.get("user-agent", ""))
         return access.state(q, sid, sid_mac(sid), norm_fp(fp))
+
+
+ACT_NAMES = {"login": "Вход в аккаунт", "register": "Регистрация", "logout": "Выход из аккаунта",
+             "start": "Включение интернета", "relogon": "Повторный вход в роутер", "stop": "Выключение интернета",
+             "redeem": "Ввод кода", "password": "Смена пароля"}
+
+
+def mins_txt(secs: int) -> str:
+    m = (int(secs) + 30) // 60  # до ближайшей минуты: 299 с — это «5 мин»
+    return f"{m // 60} ч {m % 60} мин" if m >= 60 else f"{m} мин"
 
 
 @app.post("/api/access/{action}")
@@ -984,6 +1353,10 @@ async def access_action(action: str, request: Request):
         raise HTTPException(400, "bad json")
     mac = sid_mac(sid)
     nav = None  # куда отправить браузер: вход/выход в Chilli
+    what = ACT_NAMES.get(action, action)
+    if action in ("login", "register") and isinstance(body, dict):
+        what += f" «{clean(str(body.get('login', '')), 40)}»"  # логин видно, пароль — никогда
+    ev = None
     try:
         if action in ("login", "register"):
             b = AuthIn(**body)
@@ -991,12 +1364,16 @@ async def access_action(action: str, request: Request):
                 raise HTTPException(429, "Слишком много попыток. Подождите 15 минут")
             async with db_lock:
                 if action == "login":
-                    access.login_user(q, sid, b.login, b.password)
+                    uid = access.login_user(q, sid, b.login, b.password)
                 else:
-                    access.register(q, sid, mac, norm_fp(b.fp), b.login, b.password)
+                    uid = access.register(q, sid, mac, norm_fp(b.fp), b.login, b.password)
+                login = q("SELECT login FROM users WHERE id=?", (uid,))[0][0]
+                link(sid, f"user:{uid}", f"аккаунт «{login}»")
+            ev = (f"🔑 Вошёл в аккаунт «{login}»" if action == "login" else f"🆕 Зарегистрировал аккаунт «{login}»")
         elif action == "logout":
             async with db_lock:
                 access.logout(q, sid)
+            ev = "🚪 Вышел из аккаунта"
         else:
             async with db_lock:
                 # без пароля: аккаунт устройства создаётся сам (для старта и кодов)
@@ -1017,6 +1394,7 @@ async def access_action(action: str, request: Request):
                         if action == "start":
                             access.stop(q, uid, "no_chilli")
                         raise access.AccessError("Переподключитесь к «Assalom Wi-Fi» и откройте страницу заново")
+                ev = action  # текст — ниже, когда известно, сколько времени выдано
             elif action == "stop":
                 async with db_lock:
                     s = access.active(q, uid)
@@ -1024,26 +1402,41 @@ async def access_action(action: str, request: Request):
                         raise access.AccessError("Остановить можно с того устройства, где включено")
                     access.stop(q, uid, "user")
                     nav = chilli_logoff_url(mac) if mac else None
+                ev = "⏹ Выключил интернет"
             elif action == "redeem":
                 b = CodeIn(**body)
                 if not redeem_lim.ok(sid):
                     raise HTTPException(429, "Слишком много попыток. Подождите 15 минут")
                 async with db_lock:
-                    access.redeem(q, uid, b.code)
+                    n = access.redeem(q, uid, b.code)
+                ev = f"🎟 Ввёл код: +{n} мин"
             elif action == "password":
                 b = PwIn(**body)
                 if not auth_sid.ok(sid):
                     raise HTTPException(429, "Слишком много попыток")
                 async with db_lock:
                     access.change_pw(q, uid, b.old, b.new)
+                ev = "🔒 Сменил пароль"
             else:
                 raise HTTPException(404)
     except access.AccessError as e:
+        say(sid, f"⚠️ {what}: {e}")
         raise acc_err(e)
+    except HTTPException as e:
+        if e.status_code == 429:
+            say(sid, f"⚠️ {what}: {e.detail}")
+        raise
     except (TypeError, ValueError):
         raise HTTPException(400, "bad request")
     async with db_lock:
         st = access.state(q, sid, mac, norm_fp(body.get("fp") if isinstance(body, dict) else None))
+    if ev in ("start", "relogon"):
+        a = st.get("active") or {}
+        kind = "бесплатное время" if a.get("mode") == "free" else "по балансу"
+        ev = (f"🌐 Нажал «Включить интернет» ({kind}, {mins_txt(a.get('left', 0))}) — жду, пустит ли роутер"
+              if ev == "start" else "🔄 Повторный вход в роутер")
+    if ev:
+        say(sid, ev, loud=ev.startswith("🌐"))
     if nav:
         st["nav"] = nav
     return st
@@ -1074,10 +1467,15 @@ async def radius(body: RadiusIn, request: Request):
         return {"accept": False}
     async with db_lock:
         r = access.radius_auth(q, body.user, body.password, mac, RADIUS_CHUNK)
+    g = guest_of_mac(mac)
     if not r:
+        say(g, "⛔ Роутер спросил разрешение — отказано (время не включено или вход с другого устройства)")
         return {"accept": False}
     secs, mode = r
-    return {"accept": True, "timeout": secs, "idle": IDLE_SEC, "kbps": SPEED.get(mode, SPEED["free"])}
+    kbps = SPEED.get(mode, SPEED["free"])
+    say(g, f"✅ Роутер открыл интернет на {mins_txt(secs)}, скорость до {kbps // 1024 if kbps >= 1024 else kbps} "
+           f"{'Мбит/с' if kbps >= 1024 else 'кбит/с'}")
+    return {"accept": True, "timeout": secs, "idle": IDLE_SEC, "kbps": kbps}
 
 
 class AcctIn(BaseModel):
@@ -1102,6 +1500,14 @@ async def radius_acct(body: AcctIn, request: Request):
     async with db_lock:
         access.acct_update(q, body.status, body.id, body.user, mac, body.ip, body.secs, body.up, body.down,
                            body.cause, IDLE_SEC)
+    if body.status == "start":
+        say(guest_of_mac(mac), f"📶 Сеанс в роутере начался" + (f", IP {body.ip}" if body.ip else ""))
+    elif body.status == "stop":
+        secs = max(0, body.secs - IDLE_SEC) if body.cause == "idle" else body.secs
+        why = {"idle": "не было трафика", "timeout": "кончилось выданное время", "user": "гость отключился",
+               "logoff": "выход со страницы", "admin": "отключил админ"}.get(body.cause, body.cause or "—")
+        say(guest_of_mac(mac), f"📴 Сеанс в роутере закончен: {mins_txt(secs)}, ↓ {body.down / 1e6:.1f} МБ, "
+                               f"↑ {body.up / 1e6:.1f} МБ. Причина: {why}")
     return {"ok": True}
 
 

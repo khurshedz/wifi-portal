@@ -194,3 +194,20 @@ button.icon { background: transparent; font-size: 22px; padding: 4px 6px; }
 .net-row { display: flex; gap: 8px; }
 .net-row input { flex: 1; min-width: 0; text-transform: uppercase; letter-spacing: .05em; }
 .net button.link { background: transparent; color: var(--muted); padding: 0; font-size: 13px; text-decoration: underline; }
+
+/* реклама */
+.ad { border-color: var(--gold); }
+.ad-tag { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
+.ad-body { min-height: 76px; display: flex; gap: 12px; align-items: center; }
+.ad-ico { font-size: 34px; line-height: 1; flex: none; }
+.ad-text { font-size: 15px; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word; }
+.ad-text b { display: block; font-size: 16px; margin-bottom: 2px; }
+.ad-call { display: inline-block; margin-top: 6px; padding: 6px 12px; border-radius: 10px; background: var(--rust); color: #fff;
+  text-decoration: none; font-size: 14px; font-weight: 600; }
+.ad-sample .ad-text { color: var(--muted); }
+.ad-sample .ad-text b { color: var(--ink); }
+.ad-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.ad-foot .dots { margin: 0; }
+.ad button.link { background: transparent; color: var(--rust); padding: 0; font-size: 13px; text-decoration: underline; }
+.ad-reach { font-size: 13px; margin-top: 6px; }
