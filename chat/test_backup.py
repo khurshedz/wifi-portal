@@ -213,3 +213,64 @@ def test_backup_file_has_no_images(tg):
         json.dumps(st)
     finally:
         app.info.images.clear()
+
+
+def test_restore_failures_never_overwrite_backup(tg, monkeypatch):
+    run(app.room_topic())
+    run(app.save_backup())
+    good = dict(tg.msgs)
+    wipe()
+    app.bak = backup.TgBackup(tg, "1:x", -1)
+
+    async def boom(*a, **k):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(app.bak, "load", boom)
+    app.restore_tries = 1
+    for _ in range(10):                              # раньше после 5 попыток копия затиралась
+        assert run(app.restore_backup(replace=True)) is False
+        app.restore_tries += 1
+    assert tg.msgs == good and app.restore_tries == 11
+
+
+def test_late_restore_replaces_instead_of_mixing(tg):
+    num, _ = run(app.ensure_topic("o" * 43))         # старый гость Анон1 с перепиской
+    app.q("INSERT INTO messages(num,out,text,ts) VALUES(?,0,'тайна старого гостя',0)", (num,))
+    run(app.save_backup())
+    wipe()
+    app.bak = backup.TgBackup(tg, "1:x", -1)
+    new_num, _ = run(app.ensure_topic("n" * 43))     # пока копия не читалась, пришёл новый гость: тоже Анон1
+    assert new_num == num
+    assert run(app.restore_backup(replace=True)) is True
+    assert app.q("SELECT sid FROM guests WHERE num=?", (num,)) == [("o" * 43,)]
+    assert app.q("SELECT 1 FROM guests WHERE sid=?", ("n" * 43,)) == []  # новый гость не получил чужое
+
+
+def test_pointer_failure_removes_new_copy_and_keeps_old_pointer(tg, monkeypatch):
+    run(app.bak.save({"x": 1}))
+    old = app.bak.msg
+    tg.msgs.pop(old)                                 # старое сообщение удалили — придётся слать новое
+    real = tg.post
+
+    async def no_desc(url, **kw):
+        if url.endswith("/setChatDescription"):
+            from test_backup import Resp
+            return Resp({"ok": False, "description": "Bad Request: not enough rights"})
+        return await real(url, **kw)
+    monkeypatch.setattr(tg, "post", no_desc)
+    with pytest.raises(RuntimeError):
+        run(app.bak.save({"x": 2}))
+    assert tg.msgs == {} and f"backup_msg={old}" in tg.desc
+
+
+def test_damaged_backup_file_counts_as_no_backup(tg):
+    run(app.bak.save({"x": 1}))
+    fid = tg.msgs[app.bak.msg]
+    tg.files[fid] = b"not gzip at all"
+    with pytest.raises(backup.NoBackup):
+        run(backup.TgBackup(tg, "1:x", -1).load())
+
+
+def test_long_owner_description_keeps_pointer(tg):
+    tg.desc = "Я" * 300
+    run(app.bak._set_pointer(42))
+    assert len(tg.desc) <= 255 and tg.desc.endswith("backup_msg=42") and tg.desc.startswith("Я")

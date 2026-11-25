@@ -186,22 +186,67 @@ def test_two_identical_phones_with_different_mac_stay_two_people(env, monkeypatc
     assert app.canon(a.cookies.get("sid")) != app.canon(b.cookies.get("sid"))
 
 
-def test_fingerprint_links_only_macless_session_with_same_browser(env, monkeypatch):
+def test_fingerprint_is_only_a_hint_never_a_merge(env, monkeypatch):
     tg, visits = env
     a = phone(mac=M1)
     a.get("/api/access", params={"fp": FP}, headers=H)
     notify(visits, monkeypatch)
-    # тот же телефон открыл страницу напрямую (MAC неизвестен), тот же браузер → тот же человек
+    # страница открыта напрямую (MAC неизвестен), тот же браузер и отпечаток: подсказка, но не склейка
     same = TestClient(app.app, base_url="https://portal.example", headers={"User-Agent": REDMI})
     same.get("/")
+    same.post("/api/send", json={"text": "привет"}, headers=H)
     same.get("/api/access", params={"fp": FP}, headers=H)
-    # другой телефон с совпавшим отпечатком, но другим браузером → другой человек
-    diff = TestClient(app.app, base_url="https://portal.example", headers={"User-Agent": SAMSUNG})
-    diff.get("/")
-    diff.get("/api/access", params={"fp": FP}, headers=H)
-    ga = app.canon(a.cookies.get("sid"))
-    assert app.canon(same.cookies.get("sid")) == ga
-    assert app.canon(diff.cookies.get("sid")) != ga
+    same.get("/api/access", params={"fp": FP}, headers=H)
+    drain()
+    ga, gs = app.canon(a.cookies.get("sid")), app.canon(same.cookies.get("sid"))
+    assert ga != gs
+    hints = [t for _, t in tg.sent if t.startswith("ℹ️ Отпечаток")]
+    assert len(hints) == 1 and "Анон1" in hints[0]   # одна подсказка, без повторов
+    # чужую переписку не видно
+    assert [m["text"] for m in a.get("/api/messages", headers=H).json()["messages"]] == []
+
+
+def test_shared_account_does_not_merge_people(env, monkeypatch):
+    tg, visits = env
+    app.access.create_user(app.q, "family", "secret12", "admin")
+    a, b = phone(mac=M1), phone(ua=SAMSUNG, mac=M2)
+    notify(visits, monkeypatch)
+    a.post("/api/send", json={"text": "личное от А"}, headers=H)
+    for c in (a, b):
+        assert c.post("/api/access/login", json={"login": "family", "password": "secret12"}, headers=H).status_code == 200
+    drain()
+    assert app.canon(a.cookies.get("sid")) != app.canon(b.cookies.get("sid"))
+    assert b.get("/api/messages", headers=H).json()["messages"] == []
+    assert any("ℹ️ Аккаунт «family»" in t for _, t in tg.sent)
+
+
+def test_room_nick_stays_after_merge(env, monkeypatch):
+    tg, visits = env
+    monkeypatch.setattr(app, "ROOM_WIFI_ONLY", False)
+    other = TestClient(app.app, base_url="https://portal.example", headers={"User-Agent": REDMI})
+    other.get("/")
+    old_sid = other.cookies.get("sid")
+    assert other.post("/api/room", json={"text": "салом", "name": "Али"}, headers=H).json()["name"] == "Али"
+    phone()
+    phone(cookie=old_sid)                            # MAC связал cookie с гостем роутера
+    c = phone(cookie=old_sid)
+    app.room_burst.hits.clear()                      # лимит «раз в 2 с» — тест пишет быстрее человека
+    assert c.post("/api/room", json={"text": "ещё", "name": "Али"}, headers=H).json()["name"] == "Али"
+
+
+def test_reply_in_closed_merged_topic_reaches_the_person(env, monkeypatch):
+    tg, visits = env
+    other = TestClient(app.app, base_url="https://portal.example", headers={"User-Agent": REDMI})
+    other.get("/")
+    old_sid = other.cookies.get("sid")
+    other.post("/api/send", json={"text": "из хрома"}, headers=H)
+    drain()
+    phone()
+    notify(visits, monkeypatch)
+    phone(cookie=old_sid)
+    drain()
+    closed = [t for m, t, _ in tg.edits if m == "closeForumTopic"][0]
+    assert app.topic_guest_num(closed) == app.q("SELECT num FROM guests WHERE sid=?", (app.canon(old_sid),))[0][0]
 
 
 def test_deleted_guest_topic_is_recreated_for_events(env, monkeypatch):

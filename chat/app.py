@@ -138,9 +138,9 @@ async def tg_service(key: str, getter, **params):
 
 
 # ---------- посетитель: один человек = один гость = одна тема ----------
-# Человека узнаём по признакам: cookie (sid), MAC из подписанного редиректа роутера, аккаунт с паролем,
-# отпечаток браузера (только когда MAC неизвестен). Совпал признак другого гостя — это тот же человек:
-# гости объединяются, всё о нём пишется в одну тему.
+# Объединяем гостей только по MAC из подписанного редиректа роутера: им не поделишься.
+# Аккаунт (логином делятся) и отпечаток браузера (одинаковые телефоны совпадают) лишь подсказывают:
+# в тему пишется «похоже на Анон N», но переписки не смешиваются.
 
 def canon(sid: str) -> str:
     """Главный sid человека (все его браузеры/cookie сводятся к одному)."""
@@ -167,8 +167,25 @@ def guest_row(g: str):
     return r[0] if r else None
 
 
+def hint(sid: str, key: str, what: str) -> None:
+    """Слабый признак (аккаунт, отпечаток): запомнить первого владельца; совпал с другим — только подсказка."""
+    me = canon(sid)
+    row = q("SELECT sid FROM guest_keys WHERE key=?", (key,))
+    if not row:
+        q("INSERT INTO guest_keys VALUES(?,?,?)", (key, me, time.time()))
+        return
+    other = canon(row[0][0])
+    if other == me:
+        return
+    pair = f"hint:{min(me, other)}:{max(me, other)}:{key.split(':')[0]}"
+    if db.execute("INSERT OR IGNORE INTO guest_keys VALUES(?,?,?)", (pair, me, time.time())).rowcount:
+        go = guest_row(other)
+        say(me, f"ℹ️ {what} совпадает с {'Анон' + str(go[0]) if go else 'другим гостем'}. "
+                "Может быть тот же человек, а может и нет — темы не объединены.")
+
+
 def link(sid: str, key: str, how: str) -> str:
-    """Признак key принадлежит человеку с этим sid. Если признак уже чей-то — это один человек."""
+    """Сильный признак (MAC) принадлежит человеку с этим sid. Если признак уже чей-то — это один человек."""
     me = canon(sid)
     row = q("SELECT sid FROM guest_keys WHERE key=?", (key,))
     if not row:
@@ -183,7 +200,9 @@ def merge(a: str, b: str, how: str) -> str:
     ga, gb = guest_row(a), guest_row(b)
     keep, drop = (a, b) if ga and (not gb or ga[3] < gb[3]) else (b, a)
     gk, gd = guest_row(keep), guest_row(drop)
-    q("UPDATE guest_keys SET sid=? WHERE sid=?", (keep, drop))
+    q("UPDATE guest_keys SET sid=? WHERE sid=? AND key NOT LIKE 'hint:%'", (keep, drop))
+    if not q("SELECT 1 FROM room_names WHERE sid=?", (keep,)):  # ник в общем чате остаётся за человеком
+        q("UPDATE OR IGNORE room_names SET sid=? WHERE sid=?", (keep, drop))
     q("INSERT OR REPLACE INTO guest_keys VALUES(?,?,?)", ("sid:" + drop, keep, time.time()))
     if gd:  # у обоих была своя тема: история переезжает, старая тема закрывается
         q("UPDATE messages SET num=? WHERE num=?", (gk[0], gd[0]))
@@ -192,6 +211,8 @@ def merge(a: str, b: str, how: str) -> str:
         if q("SELECT 1 FROM bans WHERE sid=?", (drop,)):
             q("INSERT OR REPLACE INTO bans VALUES(?,?)", (keep, time.time()))
         q("DELETE FROM guests WHERE sid=?", (drop,))
+        if gd[1]:  # ответы админа в закрытой теме — тоже этому человеку
+            q("INSERT OR REPLACE INTO guest_keys VALUES(?,?,?)", (f"topic:{gd[1]}", keep, time.time()))
         say(keep, f"🔗 Это тот же человек, что Анон{gd[0]} (совпал {how}). Его тема закрыта, дальше всё здесь.")
         if gd[1]:
             spawn(close_topic(gd[1], gk[0]))
@@ -635,9 +656,12 @@ def display_name(sid: str, num: int, name: str | None) -> str:
     want = name or f"Анон{num}"
     if want.lower() in ("админ", "admin", "👑 админ", "администратор"):
         want = f"Анон{num}"
-    cur = q("SELECT display FROM room_names WHERE sid=?", (sid,))
+    ss = sids_of(sid)
+    marks = ",".join("?" * len(ss))
+    cur = q(f"SELECT display FROM room_names WHERE sid IN ({marks}) ORDER BY sid=? DESC LIMIT 1", (*ss, sid))
     if cur and (cur[0][0] == want or re.fullmatch(re.escape(want) + r" \d+", cur[0][0], re.I)):
         return cur[0][0]
+    q(f"DELETE FROM room_names WHERE sid IN ({marks}) AND sid<>?", (*ss, sid))  # старые ники этого же человека
     cand, k = want, 1
     while q("SELECT 1 FROM room_names WHERE display=? AND sid<>?", (cand, sid)):
         k += 1
@@ -657,6 +681,15 @@ def online_count() -> int:
     for k in [k for k, v in online.items() if v < edge]:
         online.pop(k, None)
     return len(online)
+
+
+def topic_guest_num(thread_id: int) -> int | None:
+    """Чья это тема. Тема, закрытая при объединении гостей, ведёт к тому же человеку."""
+    row = q("SELECT num FROM guests WHERE topic_id=?", (thread_id,))
+    if not row:
+        k = q("SELECT sid FROM guest_keys WHERE key=?", (f"topic:{thread_id}",))
+        row = q("SELECT num FROM guests WHERE sid=?", (canon(k[0][0]),)) if k else []
+    return row[0][0] if row else None
 
 
 async def poll_telegram():
@@ -697,10 +730,9 @@ async def poll_telegram():
                     continue
                 if not text:
                     continue
-                row = q("SELECT num FROM guests WHERE topic_id=?", (m["message_thread_id"],))
-                if row:
-                    q("INSERT INTO messages(num,out,text,ts) VALUES(?,1,?,?)",
-                      (row[0][0], clean(text, 4000), time.time()))
+                num = topic_guest_num(m["message_thread_id"])
+                if num:
+                    q("INSERT INTO messages(num,out,text,ts) VALUES(?,1,?,?)", (num, clean(text, 4000), time.time()))
             q("INSERT OR REPLACE INTO kv VALUES('offset',?)", (str(offset),))
         except asyncio.CancelledError:
             raise
@@ -753,8 +785,18 @@ def backup_state() -> dict:
     return d
 
 
-async def restore_backup() -> bool:
-    """True — вопрос закрыт (восстановили или копии нет), False — сбой, надо повторить."""
+def wipe_db() -> None:
+    for tbl in DB_EXPORT:
+        if tbl != "kv":
+            db.execute(f"DELETE FROM {tbl}")
+    db.execute("DELETE FROM kv WHERE k<>'offset'")  # позицию в ленте Telegram не терять
+
+
+async def restore_backup(replace: bool = False) -> bool:
+    """True — вопрос закрыт (восстановили или копии нет), False — сбой, надо повторить.
+    replace=True — копия читается поздно, после того как сервер уже работал: то, что набралось за это время,
+    стирается и база заменяется копией целиком. Смешивать нельзя: номера гостей и аккаунтов совпадут
+    и чужая переписка/баланс достанутся новому гостю."""
     try:
         d = await asyncio.wait_for(bak.load(), 30)
     except backup.NoBackup as e:
@@ -763,7 +805,10 @@ async def restore_backup() -> bool:
     except Exception as e:
         print("backup: restore failed:", type(e).__name__, e)
         return False
-    print("backup restored:", info.import_state(d), "sources,", import_db(d.get("db")), "db rows")
+    async with db_lock:
+        if replace:
+            wipe_db()
+        print("backup restored:", info.import_state(d), "sources,", import_db(d.get("db")), "db rows")
     return True
 
 
@@ -773,11 +818,21 @@ async def load_state() -> None:
     took = await take_over_cache()
     if not bak or took or not db_empty():
         return
-    for _ in range(2):
+    for wait in (2, 5, 10):
         if await restore_backup():
             return
-        await asyncio.sleep(2)
+        await asyncio.sleep(wait)
     restore_tries = 1
+    spawn(warn_admin("⚠️ Сервер проснулся, но не смог прочитать резервную копию базы из Telegram. "
+                     "Копия не тронута и не будет перезаписана; повторяю каждые 10 минут. "
+                     "Пока не прочитается, новые балансы и темы после восстановления не сохранятся."))
+
+
+async def warn_admin(text: str) -> None:
+    try:
+        await tg("sendMessage", chat_id=TG_CHAT_ID, text=text)
+    except Exception as e:
+        print("warn admin error:", e)
 
 
 async def save_backup() -> None:
@@ -792,9 +847,10 @@ async def backup_loop():
     global restore_tries
     await asyncio.sleep(120)
     while True:
-        if restore_tries:  # копия есть, но при старте не прочиталась: пробуем ещё, поверх неё не пишем
-            if await restore_backup() or restore_tries >= 5:
+        if restore_tries:  # копия есть, но при старте не прочиталась: пробуем ещё; поверх неё не пишем НИКОГДА
+            if await restore_backup(replace=True):
                 restore_tries = 0
+                spawn(warn_admin("✅ Резервная копия базы прочитана, данные восстановлены."))
             else:
                 restore_tries += 1
         if not restore_tries:
@@ -975,15 +1031,16 @@ async def index(request: Request):
     mac = signed_mac(request)
     if mac:
         # одно устройство = один гость, даже в другом окне/браузере
-        row = q("SELECT sid FROM devices WHERE mac=?", (mac,))
-        if row:
-            dsid = row[0][0]
-        else:
-            dsid = sid or secrets.token_urlsafe(32)
-            q("INSERT INTO devices(mac,sid,seen) VALUES(?,?,?)", (mac, dsid, time.time()))
-        link(dsid, "mac:" + mac, "MAC телефона от роутера")
-        if sid and sid != dsid:  # у браузера была своя cookie — это тот же человек
-            link(sid, "mac:" + mac, "MAC телефона от роутера")
+        async with db_lock:  # не во время создания темы этому же гостю (ensure_topic держит замок)
+            row = q("SELECT sid FROM devices WHERE mac=?", (mac,))
+            if row:
+                dsid = row[0][0]
+            else:
+                dsid = sid or secrets.token_urlsafe(32)
+                q("INSERT INTO devices(mac,sid,seen) VALUES(?,?,?)", (mac, dsid, time.time()))
+            link(dsid, "mac:" + mac, "MAC телефона от роутера")
+            if sid and sid != dsid:  # у браузера была своя cookie — это тот же человек
+                link(sid, "mac:" + mac, "MAC телефона от роутера")
         sid = dsid
         q("UPDATE devices SET seen=? WHERE mac=?", (time.time(), mac))
         save_chilli_ctx(request, mac)
@@ -1068,7 +1125,7 @@ ad_lim = Limiter(20, 60)
 async def ad_click(body: AdClickIn, request: Request):
     require_page(request)
     sid = get_sid(request)
-    if ad_lim.ok(sid) and q("SELECT 1 FROM ads WHERE id=? AND off=0", (body.id,)):
+    if ad_lim.ok(sid) and q("SELECT 1 FROM ads WHERE id=? AND off=0 AND until>?", (body.id, time.time())):
         day = ad_day()
         q("INSERT OR IGNORE INTO ad_stats(ad_id, sid, day) VALUES(?,?,?)", (body.id, sid, day))
         q("UPDATE ad_stats SET click=1 WHERE ad_id=? AND sid=? AND day=?", (body.id, sid, day))
@@ -1308,8 +1365,7 @@ def acc_err(e: access.AccessError):
 
 
 def link_fp(sid: str, fp: str | None, ua: str) -> None:
-    """Отпечаток браузера связывает людей, только когда MAC неизвестен (страницу открыли не через роутер)
-    и последний заход другого гостя был с точно таким же браузером. Одинаковые телефоны всё же могут совпасть."""
+    """Отпечаток браузера — только подсказка, и только когда MAC неизвестен и браузер в точности тот же."""
     if not fp:
         return
     me, key = canon(sid), "fp:" + fp
@@ -1323,7 +1379,7 @@ def link_fp(sid: str, fp: str | None, ua: str) -> None:
     ss = sids_of(other)
     last = q(f"SELECT ua FROM visits WHERE sid IN ({','.join('?' * len(ss))}) ORDER BY id DESC LIMIT 1", ss)
     if last and last[0][0] == ua[:400]:
-        merge(me, other, "отпечаток браузера — может ошибаться, если у двоих одинаковые телефоны")
+        hint(sid, key, "Отпечаток браузера (телефон той же модели, тот же браузер)")
 
 
 @app.get("/api/access")
@@ -1368,7 +1424,7 @@ async def access_action(action: str, request: Request):
                 else:
                     uid = access.register(q, sid, mac, norm_fp(b.fp), b.login, b.password)
                 login = q("SELECT login FROM users WHERE id=?", (uid,))[0][0]
-                link(sid, f"user:{uid}", f"аккаунт «{login}»")
+                hint(sid, f"user:{uid}", f"Аккаунт «{login}» (логином могут делиться)")
             ev = (f"🔑 Вошёл в аккаунт «{login}»" if action == "login" else f"🆕 Зарегистрировал аккаунт «{login}»")
         elif action == "logout":
             async with db_lock:

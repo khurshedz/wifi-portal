@@ -70,9 +70,14 @@ class TgBackup:
         return int(m.group(1)) if m else None
 
     async def _set_pointer(self, mid: int) -> None:
+        tag = f"Служебная метка бота: backup_msg={mid}"
         rest = TAG_RE.sub("", await self._description()).replace("Служебная метка бота:", "").strip()
-        text = (rest + "\n" if rest else "") + f"Служебная метка бота: backup_msg={mid}"
-        await self.call("setChatDescription", chat_id=self.chat, description=text[-255:])
+        rest = rest[:255 - len(tag) - 1].rstrip()  # укорачиваем текст владельца, а не метку
+        try:
+            await self.call("setChatDescription", chat_id=self.chat, description=(rest + "\n" if rest else "") + tag)
+        except RuntimeError as e:
+            if "not modified" not in str(e).lower():
+                raise
 
     async def load(self) -> dict:
         """Состояние из копии. NoBackup — копии нет; любая другая ошибка — сбой, стоит повторить."""
@@ -97,7 +102,10 @@ class TgBackup:
         r = await self.http.get(f"{self.file_api}/{f['file_path']}", timeout=60)
         if r.status_code != 200:
             raise RuntimeError(f"backup download: HTTP {r.status_code}")
-        state = unpack(r.content)
+        try:
+            state = unpack(r.content)
+        except (OSError, EOFError, ValueError) as e:  # файл испорчен — читать нечего, это не сбой сети
+            raise NoBackup(f"backup file is damaged: {type(e).__name__}") from None
         self.msg = mid
         return state
 
@@ -109,8 +117,7 @@ class TgBackup:
         if len(blob) > MAX_BLOB:
             raise RuntimeError(f"backup too big: {len(blob)} bytes")
         files = {"f": (FILE_NAME, blob, "application/gzip")}
-        if self.msg is None:
-            self.msg = await self.pointer()
+        self.msg = await self.pointer()  # всегда пишем в то сообщение, на которое указывает описание группы
         if self.msg:
             try:
                 media = json.dumps({"type": "document", "media": "attach://f", "caption": caption()})
@@ -121,7 +128,15 @@ class TgBackup:
                 print("backup: edit failed, sending a new message:", e)
         m = await self.call("sendDocument", files={"document": files["f"]}, chat_id=self.chat,
                             caption=caption(), disable_notification="true")
+        try:
+            await self._set_pointer(m["message_id"])
+        except Exception:
+            # описание не обновилось — новая копия бесполезна (после сна её не найдут): убрать и повторить позже
+            try:
+                await self.call("deleteMessage", chat_id=self.chat, message_id=m["message_id"])
+            except Exception as e:
+                print("backup: could not delete the unreferenced copy:", e)
+            raise
         self.msg = m["message_id"]
-        await self._set_pointer(self.msg)
         self.last = digest
         return True
